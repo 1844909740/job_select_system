@@ -1,0 +1,6 @@
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from . import views
+router = DefaultRouter()
+router.register('charts', views.ChartComponentViewSet, basename='chart-component')
+urlpatterns = [path('', include(router.urls))]
