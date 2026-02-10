@@ -1,0 +1,269 @@
+import { useState, useEffect } from 'react'
+import { Table, Button, Modal, Form, Input, Select, Tag, Space, message, Card, Row, Col, Statistic, Popconfirm, Spin, Switch, Tabs, Descriptions } from 'antd'
+import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, TeamOutlined, SafetyOutlined, LockOutlined } from '@ant-design/icons'
+import { userAPI, roleAPI, permissionAPI } from '../../api'
+
+export default function Users() {
+  const [users, setUsers] = useState([])
+  const [roles, setRoles] = useState([])
+  const [permissions, setPermissions] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [activeTab, setActiveTab] = useState('users')
+  const [userModalOpen, setUserModalOpen] = useState(false)
+  const [roleModalOpen, setRoleModalOpen] = useState(false)
+  const [permModalOpen, setPermModalOpen] = useState(false)
+  const [editingUser, setEditingUser] = useState(null)
+  const [editingRole, setEditingRole] = useState(null)
+  const [userForm] = Form.useForm()
+  const [roleForm] = Form.useForm()
+  const [permForm] = Form.useForm()
+
+  useEffect(() => {
+    loadData()
+  }, [activeTab])
+
+  const loadData = async () => {
+    setLoading(true)
+    try {
+      if (activeTab === 'users') {
+        const { data } = await userAPI.list()
+        setUsers(data.results || data || [])
+      } else if (activeTab === 'roles') {
+        const { data } = await roleAPI.list()
+        setRoles(data.results || data || [])
+      } else {
+        const { data } = await permissionAPI.list()
+        setPermissions(data.results || data || [])
+      }
+    } catch {} finally { setLoading(false) }
+  }
+
+  // === 用户 ===
+  const openEditUser = (user) => {
+    setEditingUser(user)
+    userForm.setFieldsValue({
+      username: user.username,
+      email: user.email,
+      phone: user.phone,
+      is_active: user.is_active,
+      role: user.role,
+    })
+    setUserModalOpen(true)
+  }
+
+  const saveUser = async (values) => {
+    try {
+      if (editingUser) {
+        await userAPI.patch(editingUser.id, values)
+        message.success('更新成功')
+      } else {
+        await userAPI.create(values)
+        message.success('创建成功')
+      }
+      setUserModalOpen(false)
+      setEditingUser(null)
+      userForm.resetFields()
+      loadData()
+    } catch (err) {
+      message.error('操作失败')
+    }
+  }
+
+  const deleteUser = async (id) => {
+    try {
+      await userAPI.delete(id)
+      message.success('已删除')
+      loadData()
+    } catch { message.error('删除失败') }
+  }
+
+  // === 角色 ===
+  const openEditRole = (role) => {
+    setEditingRole(role)
+    roleForm.setFieldsValue({ name: role.name, description: role.description })
+    setRoleModalOpen(true)
+  }
+
+  const saveRole = async (values) => {
+    try {
+      if (editingRole) {
+        await roleAPI.update(editingRole.id, values)
+      } else {
+        await roleAPI.create(values)
+      }
+      message.success('操作成功')
+      setRoleModalOpen(false)
+      setEditingRole(null)
+      roleForm.resetFields()
+      loadData()
+    } catch { message.error('操作失败') }
+  }
+
+  const deleteRole = async (id) => {
+    try { await roleAPI.delete(id); message.success('已删除'); loadData() }
+    catch { message.error('删除失败') }
+  }
+
+  // === 权限 ===
+  const savePerm = async (values) => {
+    try {
+      await permissionAPI.create(values)
+      message.success('创建成功')
+      setPermModalOpen(false)
+      permForm.resetFields()
+      loadData()
+    } catch { message.error('创建失败') }
+  }
+
+  const deletePerm = async (id) => {
+    try { await permissionAPI.delete(id); message.success('已删除'); loadData() }
+    catch { message.error('删除失败') }
+  }
+
+  const userColumns = [
+    { title: '用户名', dataIndex: 'username', key: 'username' },
+    { title: '邮箱', dataIndex: 'email', key: 'email', ellipsis: true },
+    { title: '手机', dataIndex: 'phone', key: 'phone' },
+    {
+      title: '角色', dataIndex: 'role', key: 'role',
+      render: (r) => r ? <Tag color="blue">{typeof r === 'object' ? r.name : r}</Tag> : <Tag>未分配</Tag>,
+    },
+    {
+      title: '状态', dataIndex: 'is_active', key: 'is_active',
+      render: (v) => <Tag color={v ? 'success' : 'default'}>{v ? '启用' : '禁用'}</Tag>,
+    },
+    { title: '注册时间', dataIndex: 'date_joined', key: 'date_joined', render: (t) => t?.slice(0, 10) },
+    {
+      title: '操作', key: 'actions', width: 160,
+      render: (_, record) => (
+        <Space>
+          <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEditUser(record)}>编辑</Button>
+          <Popconfirm title="确认删除？" onConfirm={() => deleteUser(record.id)}>
+            <Button size="small" type="link" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  const roleColumns = [
+    { title: '角色名称', dataIndex: 'name', key: 'name' },
+    { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
+    {
+      title: '权限数', dataIndex: 'permissions', key: 'perms',
+      render: (p) => <Tag color="blue">{Array.isArray(p) ? p.length : 0}</Tag>,
+    },
+    { title: '创建时间', dataIndex: 'created_at', key: 'created_at', render: (t) => t?.slice(0, 10) },
+    {
+      title: '操作', key: 'actions', width: 160,
+      render: (_, record) => (
+        <Space>
+          <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEditRole(record)}>编辑</Button>
+          <Popconfirm title="确认删除？" onConfirm={() => deleteRole(record.id)}>
+            <Button size="small" type="link" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  const permColumns = [
+    { title: '权限名称', dataIndex: 'name', key: 'name' },
+    { title: '编码', dataIndex: 'codename', key: 'codename', render: (c) => <code>{c}</code> },
+    { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
+    {
+      title: '操作', key: 'actions', width: 80,
+      render: (_, record) => (
+        <Popconfirm title="确认删除？" onConfirm={() => deletePerm(record.id)}>
+          <Button size="small" type="link" danger icon={<DeleteOutlined />} />
+        </Popconfirm>
+      ),
+    },
+  ]
+
+  return (
+    <div className="page-container">
+      <h2 className="section-title"><TeamOutlined style={{ color: '#00bebd', marginRight: 8 }} />用户管理</h2>
+
+      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        <Col xs={8}>
+          <Card><Statistic title="用户总数" value={users.length} prefix={<UserOutlined />} valueStyle={{ color: '#00bebd' }} /></Card>
+        </Col>
+        <Col xs={8}>
+          <Card><Statistic title="角色数" value={roles.length} prefix={<TeamOutlined />} valueStyle={{ color: '#722ed1' }} /></Card>
+        </Col>
+        <Col xs={8}>
+          <Card><Statistic title="权限数" value={permissions.length} prefix={<SafetyOutlined />} valueStyle={{ color: '#1890ff' }} /></Card>
+        </Col>
+      </Row>
+
+      <div className="table-card">
+        <div className="category-tabs" style={{ marginBottom: 0 }}>
+          <div className={`category-tab ${activeTab === 'users' ? 'active' : ''}`} onClick={() => setActiveTab('users')}>
+            <UserOutlined style={{ marginRight: 4 }} />用户列表
+          </div>
+          <div className={`category-tab ${activeTab === 'roles' ? 'active' : ''}`} onClick={() => setActiveTab('roles')}>
+            <TeamOutlined style={{ marginRight: 4 }} />角色管理
+          </div>
+          <div className={`category-tab ${activeTab === 'perms' ? 'active' : ''}`} onClick={() => setActiveTab('perms')}>
+            <SafetyOutlined style={{ marginRight: 4 }} />权限管理
+          </div>
+          <div style={{ flex: 1 }} />
+          {activeTab === 'users' && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditingUser(null); userForm.resetFields(); setUserModalOpen(true) }}>
+              新建用户
+            </Button>
+          )}
+          {activeTab === 'roles' && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditingRole(null); roleForm.resetFields(); setRoleModalOpen(true) }}>
+              新建角色
+            </Button>
+          )}
+          {activeTab === 'perms' && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => { permForm.resetFields(); setPermModalOpen(true) }}>
+              新建权限
+            </Button>
+          )}
+        </div>
+
+        <Spin spinning={loading}>
+          {activeTab === 'users' && <Table columns={userColumns} dataSource={users} rowKey="id" pagination={{ pageSize: 10 }} />}
+          {activeTab === 'roles' && <Table columns={roleColumns} dataSource={roles} rowKey="id" pagination={{ pageSize: 10 }} />}
+          {activeTab === 'perms' && <Table columns={permColumns} dataSource={permissions} rowKey="id" pagination={{ pageSize: 10 }} />}
+        </Spin>
+      </div>
+
+      {/* 用户弹窗 */}
+      <Modal title={editingUser ? '编辑用户' : '新建用户'} open={userModalOpen} onCancel={() => setUserModalOpen(false)} onOk={() => userForm.submit()} okText="保存">
+        <Form form={userForm} onFinish={saveUser} layout="vertical">
+          <Form.Item name="username" label="用户名" rules={[{ required: true }]}><Input /></Form.Item>
+          {!editingUser && <Form.Item name="password" label="密码" rules={[{ required: true }]}><Input.Password /></Form.Item>}
+          <Form.Item name="email" label="邮箱" rules={[{ type: 'email' }]}><Input /></Form.Item>
+          <Form.Item name="phone" label="手机号"><Input /></Form.Item>
+          <Form.Item name="role" label="角色">
+            <Select allowClear placeholder="选择角色">
+              {roles.map((r) => <Select.Option key={r.id} value={r.id}>{r.name}</Select.Option>)}
+            </Select>
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 角色弹窗 */}
+      <Modal title={editingRole ? '编辑角色' : '新建角色'} open={roleModalOpen} onCancel={() => setRoleModalOpen(false)} onOk={() => roleForm.submit()} okText="保存">
+        <Form form={roleForm} onFinish={saveRole} layout="vertical">
+          <Form.Item name="name" label="角色名称" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="description" label="描述"><Input.TextArea rows={2} /></Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 权限弹窗 */}
+      <Modal title="新建权限" open={permModalOpen} onCancel={() => setPermModalOpen(false)} onOk={() => permForm.submit()} okText="创建">
+        <Form form={permForm} onFinish={savePerm} layout="vertical">
+          <Form.Item name="name" label="权限名称" rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="codename" label="权限编码" rules={[{ required: true }]}><Input placeholder="如：view_position" /></Form.Item>
+          <Form.Item name="description" label="描述"><Input.TextArea rows={2} /></Form.Item>
+        </Form>
+      </Modal>
+    </div>
+  )
+}

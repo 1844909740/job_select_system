@@ -5,6 +5,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from django.utils import timezone
+from datetime import timedelta
 from .models import DataSource, DataTask, DataRecord
 from .serializers import DataSourceSerializer, DataTaskSerializer, DataRecordSerializer
 
@@ -38,8 +40,63 @@ class DataTaskViewSet(viewsets.ModelViewSet):
     def run(self, request, pk=None):
         """手动运行任务"""
         task = self.get_object()
-        # 这里添加实际的任务执行逻辑
-        return Response({'message': f'任务 {task.name} 已启动'})
+        # 更新任务状态为运行中
+        task.status = '开发中'
+        task.save()
+        
+        try:
+            # 模拟数据采集执行逻辑
+            # 实际项目中，这里应该根据数据源类型和配置执行相应的采集操作
+            import time
+            time.sleep(2)  # 模拟采集过程
+            
+            # 生成模拟数据
+            import random
+            mock_data = {
+                'title': f'测试岗位{random.randint(1, 1000)}',
+                'company': f'测试公司{random.randint(1, 100)}',
+                'salary': f'{random.randint(5000, 30000)}-{random.randint(30000, 50000)}',
+                'location': '北京',
+                'requirements': '熟悉Python，有相关工作经验',
+                'collected_at': time.strftime('%Y-%m-%d %H:%M:%S')
+            }
+            
+            # 保存采集记录
+            from .models import DataRecord
+            DataRecord.objects.create(
+                task=task,
+                data=mock_data
+            )
+            
+            # 更新任务状态和运行时间
+            task.status = '已完成'
+            task.last_run_time = timezone.now()
+            # 简单计算下次运行时间（实际项目中应使用cron表达式解析）
+            task.next_run_time = timezone.now() + timedelta(days=1)
+            task.save()
+            
+            return Response({'message': f'任务 {task.name} 执行成功', 'collected_data': mock_data})
+        except Exception as e:
+            # 记录异常信息
+            from operation_log.models import SystemLog
+            SystemLog.objects.create(
+                level='ERROR',
+                message=f'数据采集任务执行失败: {str(e)}',
+                module='data_management',
+                extra_data={
+                    'task_id': task.id,
+                    'task_name': task.name,
+                    'datasource_id': task.data_source.id,
+                    'datasource_name': task.data_source.name,
+                    'user_id': request.user.id,
+                    'user_name': request.user.username
+                }
+            )
+            
+            # 更新任务状态为失败
+            task.status = '已暂停'
+            task.save()
+            return Response({'message': f'任务 {task.name} 执行失败: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=True, methods=['post'])
     def pause(self, request, pk=None):
