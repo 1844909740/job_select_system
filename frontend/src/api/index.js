@@ -15,15 +15,31 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-// 响应拦截器 - 处理 401
+// 响应拦截器 - 统一错误处理
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    const status = err.response?.status
+
+    if (status === 401) {
+      // Token 过期或无效，清除本地登录状态
+      const currentPath = window.location.pathname
       localStorage.removeItem('token')
       localStorage.removeItem('user')
-      window.location.href = '/login'
+      // 只在非登录页时跳转，避免登录失败也触发跳转
+      if (currentPath !== '/login') {
+        window.location.href = '/login'
+      }
+    } else if (status === 403) {
+      // 无权限 - 不自动跳转，由各组件自行处理
+      console.warn('[API] 权限不足:', err.config?.url)
+    } else if (status >= 500) {
+      console.error('[API] 服务器错误:', err.config?.url, err.response?.data)
+    } else if (!err.response) {
+      // 网络错误（后端未启动、断网等）
+      console.error('[API] 网络连接失败，请检查后端服务是否启动')
     }
+
     return Promise.reject(err)
   }
 )
@@ -44,6 +60,9 @@ export const userAPI = {
   update: (id, data) => api.put(`/users/users/${id}/`, data),
   patch: (id, data) => api.patch(`/users/users/${id}/`, data),
   delete: (id) => api.delete(`/users/users/${id}/`),
+  promote: (id) => api.post(`/users/users/${id}/promote/`),
+  demote: (id) => api.post(`/users/users/${id}/demote/`),
+  transferSuperuser: (id) => api.post(`/users/users/${id}/transfer-superuser/`),
 }
 
 // ============ 角色权限 ============

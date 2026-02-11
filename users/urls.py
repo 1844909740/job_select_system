@@ -17,5 +17,9 @@ urlpatterns = [
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('me/', views.get_current_user, name='current_user'),
     path('profile/', views.update_user_profile, name='update_profile'),
+    # 管理员权限管理
+    path('users/<int:user_id>/promote/', views.promote_user, name='promote_user'),
+    path('users/<int:user_id>/demote/', views.demote_user, name='demote_user'),
+    path('users/<int:user_id>/transfer-superuser/', views.transfer_superuser, name='transfer_superuser'),
     path('', include(router.urls)),
 ]

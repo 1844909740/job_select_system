@@ -9,13 +9,7 @@ db.sqlite3
 .DS_Store
 .vscode/
 .idea/
-venv/
-*.pyc
-__pycache__/
-.env
-media/
-*.sqlite3
-.DS_Store
 project-export.zip
 dist/
-*.egg-info/
+logs/*.log
+node_modules/

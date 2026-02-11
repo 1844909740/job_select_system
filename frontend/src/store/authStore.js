@@ -16,6 +16,7 @@ const useAuthStore = create((set) => ({
   },
 
   register: async (values) => {
+    // 直接抛出错误让组件层处理，保留完整的 response 信息
     const { data } = await authAPI.register(values)
     return data
   },
@@ -32,7 +33,7 @@ const useAuthStore = create((set) => ({
       localStorage.setItem('user', JSON.stringify(data))
       set({ user: data })
     } catch {
-      // ignore
+      // token 可能已过期，静默处理
     }
   },
 }))
