@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
-import { Table, Button, Modal, Form, Input, Select, Tag, Space, message, Card, Row, Col, Statistic, Popconfirm, Spin } from 'antd'
-import { PlusOutlined, PlayCircleOutlined, PauseCircleOutlined, DeleteOutlined, DatabaseOutlined, CloudServerOutlined, SyncOutlined } from '@ant-design/icons'
+import { Table, Button, Modal, Form, Input, Select, Tag, Space, message, Card, Row, Col, Statistic, Popconfirm, Spin, Alert } from 'antd'
+import { PlusOutlined, PlayCircleOutlined, PauseCircleOutlined, DeleteOutlined, DatabaseOutlined, CloudServerOutlined, SyncOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { dataAPI } from '../../api'
+import useAuthStore from '../../store/authStore'
 
 export default function DataManagement() {
   const [tasks, setTasks] = useState([])
@@ -13,6 +14,10 @@ export default function DataManagement() {
   const [activeTab, setActiveTab] = useState('tasks')
   const [form] = Form.useForm()
   const [sourceForm] = Form.useForm()
+  const [oneClickLoading, setOneClickLoading] = useState(false)
+  
+  const currentUser = useAuthStore((s) => s.user)
+  const isAdmin = currentUser?.is_staff || currentUser?.is_superuser
 
   useEffect(() => {
     loadData()
@@ -92,6 +97,27 @@ export default function DataManagement() {
     } catch { message.error('删除失败') }
   }
 
+  // 一键数据采集
+  const handleOneClickCollection = async () => {
+    if (!isAdmin) {
+      message.error('只有管理员和超级管理员可以使用一键数据采集功能')
+      return
+    }
+
+    setOneClickLoading(true)
+    try {
+      const { data } = await dataAPI.oneClickCollection()
+      message.success(data.message || '数据采集完成！')
+      // 刷新数据
+      loadData()
+    } catch (err) {
+      const errorMsg = err.response?.data?.error || '数据采集失败，请稍后重试'
+      message.error(errorMsg)
+    } finally {
+      setOneClickLoading(false)
+    }
+  }
+
   const statusMap = {
     pending: { color: 'default', text: '待运行' },
     running: { color: 'processing', text: '运行中' },
@@ -140,6 +166,51 @@ export default function DataManagement() {
 
   return (
     <div className="page-container">
+      <h2 className="section-title">
+        <DatabaseOutlined style={{ color: '#00bebd', marginRight: 8 }} />
+        数据采集管理
+      </h2>
+
+      {/* 一键采集功能区 */}
+      {isAdmin && (
+        <Card style={{ marginBottom: 24, background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <h3 style={{ color: 'white', margin: 0, marginBottom: 8 }}>
+                <ThunderboltOutlined style={{ marginRight: 8 }} />
+                一键数据采集
+              </h3>
+              <p style={{ color: 'rgba(255,255,255,0.8)', margin: 0, fontSize: 14 }}>
+                快速生成15000条高质量岗位数据，包含完整的职位信息、薪资范围、技能要求等
+              </p>
+            </div>
+            <Button 
+              type="primary" 
+              size="large"
+              icon={<ThunderboltOutlined />}
+              loading={oneClickLoading}
+              onClick={handleOneClickCollection}
+              style={{ 
+                background: 'rgba(255,255,255,0.2)', 
+                border: '1px solid rgba(255,255,255,0.3)',
+                backdropFilter: 'blur(10px)'
+              }}
+            >
+              {oneClickLoading ? '采集中...' : '一键采集'}
+            </Button>
+          </div>
+          {oneClickLoading && (
+            <Alert
+              message="数据采集进行中，请耐心等待..."
+              description="正在生成15000条岗位数据，预计需要1-3分钟时间"
+              type="info"
+              showIcon
+              style={{ marginTop: 16, background: 'rgba(255,255,255,0.9)' }}
+            />
+          )}
+        </Card>
+      )}
+
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
         <Col xs={8}>
           <Card><Statistic title="采集任务" value={tasks.length} prefix={<SyncOutlined />} valueStyle={{ color: '#00bebd' }} /></Card>

@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Row, Col, Card, Statistic, Spin, Input, message, Empty, Modal, List, Tag, Button, Popconfirm } from 'antd'
+import { Row, Col, Card, Statistic, Spin, Input, message, Empty } from 'antd'
 import {
   BarChartOutlined, TeamOutlined, RiseOutlined, BankOutlined,
-  SearchOutlined, HeartOutlined, HeartFilled, EyeOutlined,
+  SearchOutlined, HeartOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { statisticsAPI, positionAPI } from '../../api'
+import { statisticsAPI } from '../../api'
 
 function toArray(data) {
   if (!data) return []
@@ -25,12 +25,6 @@ export default function Statistics() {
   const [industry, setIndustry] = useState([])
   const [company, setCompany] = useState([])
   const [loading, setLoading] = useState(true)
-  // 收藏岗位弹窗
-  const [favModalOpen, setFavModalOpen] = useState(false)
-  const [favList, setFavList] = useState([])
-  const [favLoading, setFavLoading] = useState(false)
-  // 岗位详情弹窗
-  const [detailModal, setDetailModal] = useState({ open: false, item: null })
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -65,33 +59,6 @@ export default function Statistics() {
   useEffect(() => { loadAll() }, [scope])
 
   const handleSearch = () => loadAll()
-
-  // 打开收藏岗位弹窗
-  const openFavModal = async () => {
-    setFavModalOpen(true)
-    setFavLoading(true)
-    try {
-      const { data } = await positionAPI.favorites({ page_size: 200 })
-      setFavList(data.results || data || [])
-    } catch {
-      message.error('加载收藏岗位失败')
-    } finally {
-      setFavLoading(false)
-    }
-  }
-
-  // 取消收藏
-  const handleUnfavorite = async (id) => {
-    try {
-      await positionAPI.unfavorite(id)
-      message.success('已取消收藏')
-      setFavList((prev) => prev.filter((p) => p.id !== id))
-      // 刷新统计
-      loadAll()
-    } catch {
-      message.error('取消收藏失败')
-    }
-  }
 
   const barOption = (title, data, color = '#00bebd') => ({
     title: { text: title, left: 'center', textStyle: { fontSize: 15, fontWeight: 600 } },
@@ -162,9 +129,7 @@ export default function Statistics() {
         {/* 概览卡片 */}
         <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
           <Col xs={12} md={6}>
-            <Card hoverable onClick={openFavModal} style={{ cursor: 'pointer' }}>
-              <Statistic title="职位总数（点击查看收藏）" value={basic?.total_positions || 0} prefix={<BarChartOutlined />} valueStyle={{ color: '#00bebd' }} />
-            </Card>
+            <Card><Statistic title="职位总数" value={basic?.total_positions || 0} prefix={<BarChartOutlined />} valueStyle={{ color: '#00bebd' }} /></Card>
           </Col>
           <Col xs={12} md={6}>
             <Card><Statistic title="平均薪资" value={basic?.avg_salary || 0} suffix="K" prefix={<RiseOutlined />} valueStyle={{ color: '#fe574a' }} precision={1} /></Card>
@@ -202,80 +167,6 @@ export default function Statistics() {
           </Row>
         )}
       </Spin>
-
-      {/* 收藏岗位弹窗 */}
-      <Modal
-        title={<><HeartFilled style={{ color: '#ff4d4f', marginRight: 8 }} />我的收藏岗位</>}
-        open={favModalOpen}
-        onCancel={() => setFavModalOpen(false)}
-        footer={null}
-        width={720}
-      >
-        <Spin spinning={favLoading}>
-          {favList.length === 0 ? (
-            <Empty description="暂无收藏岗位，请先在职位页面收藏" />
-          ) : (
-            <List
-              dataSource={favList}
-              renderItem={(item) => (
-                <List.Item
-                  actions={[
-                    <Button type="link" icon={<EyeOutlined />} onClick={() => setDetailModal({ open: true, item })}>查看</Button>,
-                    <Popconfirm title="确认取消收藏？" onConfirm={() => handleUnfavorite(item.id)}>
-                      <Button type="link" danger icon={<HeartFilled />}>取消收藏</Button>
-                    </Popconfirm>,
-                  ]}
-                >
-                  <List.Item.Meta
-                    title={<span style={{ fontWeight: 600 }}>{item.title} <Tag color="red">{item.salary_range}</Tag></span>}
-                    description={<span>{item.company} · {item.location} · {item.experience} · {item.education}</span>}
-                  />
-                </List.Item>
-              )}
-            />
-          )}
-        </Spin>
-      </Modal>
-
-      {/* 岗位详情弹窗 */}
-      <Modal
-        title={detailModal.item?.title}
-        open={detailModal.open}
-        onCancel={() => setDetailModal({ open: false, item: null })}
-        footer={null}
-        width={640}
-      >
-        {detailModal.item && (
-          <div>
-            <Row gutter={[16, 12]}>
-              <Col span={12}><strong>公司：</strong>{detailModal.item.company}</Col>
-              <Col span={12}><strong>薪资：</strong><span style={{ color: '#fe574a', fontWeight: 600 }}>{detailModal.item.salary_range}</span></Col>
-              <Col span={12}><strong>城市：</strong>{detailModal.item.location}</Col>
-              <Col span={12}><strong>经验：</strong>{detailModal.item.experience}</Col>
-              <Col span={12}><strong>学历：</strong>{detailModal.item.education}</Col>
-              <Col span={12}><strong>类型：</strong>{detailModal.item.position_type}</Col>
-              <Col span={12}><strong>行业：</strong>{detailModal.item.industry}</Col>
-              <Col span={24}><strong>福利：</strong>{detailModal.item.benefits}</Col>
-            </Row>
-            {detailModal.item.description && (
-              <div style={{ marginTop: 16 }}>
-                <strong>岗位描述：</strong>
-                <div style={{ marginTop: 8, whiteSpace: 'pre-wrap', color: '#666', background: '#fafafa', padding: 12, borderRadius: 8 }}>
-                  {detailModal.item.description}
-                </div>
-              </div>
-            )}
-            {detailModal.item.requirements && (
-              <div style={{ marginTop: 16 }}>
-                <strong>岗位要求：</strong>
-                <div style={{ marginTop: 8, whiteSpace: 'pre-wrap', color: '#666', background: '#fafafa', padding: 12, borderRadius: 8 }}>
-                  {detailModal.item.requirements}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </Modal>
     </div>
   )
 }

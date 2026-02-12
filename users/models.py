@@ -40,7 +40,7 @@ class Role(models.Model):
 
 class User(AbstractUser):
     """自定义用户模型"""
-    phone = models.CharField('手机号', max_length=11, unique=True, null=True, blank=True)
+    phone = models.CharField('手机号', max_length=11, unique=True)
     avatar = models.ImageField('头像', upload_to='avatars/', null=True, blank=True)
     role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, blank=True, related_name='users')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)

@@ -282,6 +282,20 @@ class UserViewSet(viewsets.ModelViewSet):
     
     @has_permission('user_manage')
     def destroy(self, request, *args, **kwargs):
+        target_user = self.get_object()
+        
+        # 不能删除自己
+        if target_user.id == request.user.id:
+            return Response({'error': '不能删除自己的账户'}, status=status.HTTP_403_FORBIDDEN)
+        
+        # 普通管理员不能删除超级管理员
+        if target_user.is_superuser and not request.user.is_superuser:
+            return Response({'error': '普通管理员无权删除超级管理员'}, status=status.HTTP_403_FORBIDDEN)
+        
+        # 只有超级管理员可以删除管理员
+        if target_user.is_staff and not request.user.is_superuser:
+            return Response({'error': '只有超级管理员可以删除管理员账户'}, status=status.HTTP_403_FORBIDDEN)
+        
         return super().destroy(request, *args, **kwargs)
 
 

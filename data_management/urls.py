@@ -11,6 +11,6 @@ router.register('tasks', views.DataTaskViewSet, basename='data-task')
 router.register('records', views.DataRecordViewSet, basename='data-record')
 
 urlpatterns = [
-    path('generate/', views.one_click_generate, name='one-click-generate'),
+    path('one-click-collection/', views.one_click_data_collection, name='one-click-collection'),
     path('', include(router.urls)),
 ]

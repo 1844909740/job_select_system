@@ -8,5 +8,6 @@ router.register('tasks', views.AIAnalysisTaskViewSet, basename='ai-task')
 
 urlpatterns = [
     path('analyze-resume/', views.analyze_resume, name='analyze-resume'),
+    path('position/<int:position_id>/', views.get_position_detail, name='position-detail'),
     path('', include(router.urls)),
 ]

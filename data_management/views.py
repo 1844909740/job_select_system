@@ -1,29 +1,17 @@
 """
 数据采集管理视图
 """
+import subprocess
+import os
 from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
-from django.core.management import call_command
+from django.conf import settings
 from datetime import timedelta
-import io
 from .models import DataSource, DataTask, DataRecord
 from .serializers import DataSourceSerializer, DataTaskSerializer, DataRecordSerializer
-
-
-@api_view(['POST'])
-@permission_classes([IsAdminUser])
-def one_click_generate(request):
-    """一键采集：调用 generate_data 管理命令重新生成 15000 条数据"""
-    try:
-        out = io.StringIO()
-        call_command('generate_data', '--clear', '--count=15000', stdout=out)
-        output = out.getvalue()
-        return Response({'message': '数据采集完成！已生成 15000 条岗位数据', 'detail': output})
-    except Exception as e:
-        return Response({'error': f'采集失败: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class DataSourceViewSet(viewsets.ModelViewSet):
@@ -134,3 +122,285 @@ class DataRecordViewSet(viewsets.ReadOnlyModelViewSet):
         if task_id:
             queryset = queryset.filter(task_id=task_id)
         return queryset
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def one_click_data_collection(request):
+    """一键数据采集 - 调用generate_data.py重新生成15000条数据"""
+    
+    # 检查权限：只有管理员和超级管理员可以使用
+    if not (request.user.is_staff or request.user.is_superuser):
+        return Response({'error': '只有管理员和超级管理员可以使用一键数据采集功能'}, 
+                       status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        # 记录操作开始时间
+        start_time = timezone.now()
+        
+        # 记录操作日志
+        from operation_log.models import OperationLog, SystemLog
+        OperationLog.objects.create(
+            user=request.user,
+            action_type='数据采集',
+            module='data_management',
+            description='开始执行一键数据采集',
+            status='进行中',
+            ip_address=request.META.get('REMOTE_ADDR'),
+            request_path=request.path,
+            request_method='POST',
+            response_code=200,
+        )
+        
+        # 获取Django项目根目录
+        base_dir = settings.BASE_DIR
+        
+        # 构建管理命令路径
+        manage_py_path = os.path.join(base_dir, 'manage.py')
+        
+        # 执行Django管理命令
+        result = subprocess.run([
+            'python', manage_py_path, 'generate_data'
+        ], 
+        cwd=base_dir,
+        capture_output=True, 
+        text=True, 
+        timeout=300  # 5分钟超时
+        )
+        
+        end_time = timezone.now()
+        execution_time = (end_time - start_time).total_seconds()
+        
+        if result.returncode == 0:
+            # 执行成功
+            SystemLog.objects.create(
+                level='INFO',
+                message='一键数据采集执行成功',
+                module='data_management',
+                extra_data={
+                    'user_id': request.user.id,
+                    'user_name': request.user.username,
+                    'execution_time': execution_time,
+                    'stdout': result.stdout,
+                    'stderr': result.stderr,
+                }
+            )
+            
+            # 更新操作日志状态
+            OperationLog.objects.filter(
+                user=request.user,
+                action_type='数据采集',
+                status='进行中'
+            ).order_by('-created_at').first().update(
+                status='成功',
+                description=f'一键数据采集完成，耗时 {execution_time:.2f} 秒'
+            )
+            
+            return Response({
+                'message': '数据采集完成！已成功生成15000条岗位数据',
+                'execution_time': f'{execution_time:.2f}秒',
+                'details': result.stdout
+            })
+        else:
+            # 执行失败
+            error_msg = result.stderr or result.stdout or '未知错误'
+            
+            SystemLog.objects.create(
+                level='ERROR',
+                message=f'一键数据采集执行失败: {error_msg}',
+                module='data_management',
+                extra_data={
+                    'user_id': request.user.id,
+                    'user_name': request.user.username,
+                    'execution_time': execution_time,
+                    'return_code': result.returncode,
+                    'stdout': result.stdout,
+                    'stderr': result.stderr,
+                }
+            )
+            
+            # 更新操作日志状态
+            OperationLog.objects.filter(
+                user=request.user,
+                action_type='数据采集',
+                status='进行中'
+            ).order_by('-created_at').first().update(
+                status='失败',
+                description=f'一键数据采集失败: {error_msg}'
+            )
+            
+            return Response({
+                'error': f'数据采集失败: {error_msg}',
+                'details': result.stderr
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+    except subprocess.TimeoutExpired:
+        SystemLog.objects.create(
+            level='ERROR',
+            message='一键数据采集执行超时',
+            module='data_management',
+            extra_data={
+                'user_id': request.user.id,
+                'user_name': request.user.username,
+                'timeout': 300,
+            }
+        )
+        
+        return Response({
+            'error': '数据采集执行超时（超过5分钟），请稍后重试'
+        }, status=status.HTTP_408_REQUEST_TIMEOUT)
+        
+    except Exception as e:
+        SystemLog.objects.create(
+            level='ERROR',
+            message=f'一键数据采集异常: {str(e)}',
+            module='data_management',
+            extra_data={
+                'user_id': request.user.id,
+                'user_name': request.user.username,
+                'error': str(e),
+            }
+        )
+        
+        return Response({
+            'error': f'数据采集异常: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def one_click_data_collection(request):
+    """
+    一键数据采集 - 只有管理员和超级管理员可以使用
+    调用 generate_data.py 命令生成15000条数据
+    """
+    # 权限检查：只有管理员和超级管理员可以执行
+    if not (request.user.is_staff or request.user.is_superuser):
+        return Response({'error': '只有管理员和超级管理员可以执行数据采集'}, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        # 记录开始时间
+        start_time = timezone.now()
+        
+        # 获取项目根目录
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+        # 构建命令
+        manage_py_path = os.path.join(project_root, 'manage.py')
+        
+        # 执行数据生成命令
+        result = subprocess.run(
+            ['python', manage_py_path, 'generate_data'],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5分钟超时
+        )
+        
+        end_time = timezone.now()
+        execution_time = (end_time - start_time).total_seconds()
+        
+        if result.returncode == 0:
+            # 记录成功日志
+            try:
+                from operation_log.models import OperationLog, SystemLog
+                
+                OperationLog.objects.create(
+                    user=request.user,
+                    action_type='数据采集',
+                    module='data_management',
+                    description='执行一键数据采集，生成15000条岗位数据',
+                    status='成功',
+                    ip_address=request.META.get('REMOTE_ADDR'),
+                    request_path=request.path,
+                    request_method='POST',
+                    response_code=200,
+                )
+                
+                SystemLog.objects.create(
+                    level='INFO',
+                    message=f'一键数据采集成功，耗时 {execution_time:.2f} 秒',
+                    module='data_management',
+                    extra_data={
+                        'user_id': request.user.id,
+                        'username': request.user.username,
+                        'execution_time': execution_time,
+                        'command_output': result.stdout[:1000],  # 限制输出长度
+                    }
+                )
+            except Exception as log_err:
+                print(f'记录日志失败: {log_err}')
+            
+            return Response({
+                'message': '数据采集完成！已成功生成15000条岗位数据',
+                'execution_time': f'{execution_time:.2f}秒',
+                'details': result.stdout,
+                'status': 'success'
+            })
+        else:
+            # 记录失败日志
+            error_msg = result.stderr or '命令执行失败'
+            try:
+                from operation_log.models import OperationLog, SystemLog
+                
+                OperationLog.objects.create(
+                    user=request.user,
+                    action_type='数据采集',
+                    module='data_management',
+                    description='执行一键数据采集失败',
+                    status='失败',
+                    ip_address=request.META.get('REMOTE_ADDR'),
+                    request_path=request.path,
+                    request_method='POST',
+                    response_code=500,
+                )
+                
+                SystemLog.objects.create(
+                    level='ERROR',
+                    message=f'一键数据采集失败: {error_msg}',
+                    module='data_management',
+                    extra_data={
+                        'user_id': request.user.id,
+                        'username': request.user.username,
+                        'execution_time': execution_time,
+                        'error_output': result.stderr[:1000],
+                        'return_code': result.returncode,
+                    }
+                )
+            except Exception as log_err:
+                print(f'记录日志失败: {log_err}')
+            
+            return Response({
+                'error': '数据采集失败',
+                'details': error_msg,
+                'status': 'failed'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+    except subprocess.TimeoutExpired:
+        return Response({
+            'error': '数据采集超时（超过5分钟），请稍后重试',
+            'status': 'timeout'
+        }, status=status.HTTP_408_REQUEST_TIMEOUT)
+        
+    except Exception as e:
+        # 记录异常日志
+        try:
+            from operation_log.models import SystemLog
+            SystemLog.objects.create(
+                level='ERROR',
+                message=f'一键数据采集异常: {str(e)}',
+                module='data_management',
+                extra_data={
+                    'user_id': request.user.id,
+                    'username': request.user.username,
+                    'exception_type': type(e).__name__,
+                    'exception_message': str(e),
+                }
+            )
+        except Exception as log_err:
+            print(f'记录日志失败: {log_err}')
+        
+        return Response({
+            'error': f'数据采集异常: {str(e)}',
+            'status': 'error'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
