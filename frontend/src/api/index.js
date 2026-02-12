@@ -104,6 +104,7 @@ export const dataAPI = {
     pause: (id) => api.post(`/data/tasks/${id}/pause/`),
   },
   records: { list: (p) => api.get('/data/records/', { params: p }) },
+  oneClickCollection: () => api.post('/data/one-click-collection/'),
 }
 
 // ============ 统计分析 ============
@@ -158,6 +159,7 @@ export const aiAPI = {
   analyzeResume: (data) => api.post('/ai/analyze-resume/', data, {
     headers: data instanceof FormData ? { 'Content-Type': 'multipart/form-data' } : undefined,
   }),
+  getPositionDetail: (id) => api.get(`/ai/position/${id}/`),
 }
 
 export default api
