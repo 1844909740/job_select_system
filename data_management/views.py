@@ -2,13 +2,28 @@
 数据采集管理视图
 """
 from rest_framework import viewsets, status
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from django.utils import timezone
+from django.core.management import call_command
 from datetime import timedelta
+import io
 from .models import DataSource, DataTask, DataRecord
 from .serializers import DataSourceSerializer, DataTaskSerializer, DataRecordSerializer
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def one_click_generate(request):
+    """一键采集：调用 generate_data 管理命令重新生成 15000 条数据"""
+    try:
+        out = io.StringIO()
+        call_command('generate_data', '--clear', '--count=15000', stdout=out)
+        output = out.getvalue()
+        return Response({'message': '数据采集完成！已生成 15000 条岗位数据', 'detail': output})
+    except Exception as e:
+        return Response({'error': f'采集失败: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class DataSourceViewSet(viewsets.ModelViewSet):

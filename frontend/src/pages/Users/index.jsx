@@ -292,14 +292,11 @@ export default function Users() {
       <h2 className="section-title"><TeamOutlined style={{ color: '#00bebd', marginRight: 8 }} />用户管理</h2>
 
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        <Col xs={8}>
+        <Col xs={12}>
           <Card><Statistic title="用户总数" value={users.length} prefix={<UserOutlined />} valueStyle={{ color: '#00bebd' }} /></Card>
         </Col>
-        <Col xs={8}>
-          <Card><Statistic title="角色数" value={roles.length} prefix={<TeamOutlined />} valueStyle={{ color: '#722ed1' }} /></Card>
-        </Col>
-        <Col xs={8}>
-          <Card><Statistic title="权限数" value={permissions.length} prefix={<SafetyOutlined />} valueStyle={{ color: '#1890ff' }} /></Card>
+        <Col xs={12}>
+          <Card><Statistic title="角色数" value={users.length} prefix={<TeamOutlined />} valueStyle={{ color: '#722ed1' }} /></Card>
         </Col>
       </Row>
 
