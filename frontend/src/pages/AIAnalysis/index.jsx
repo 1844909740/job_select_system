@@ -4,29 +4,26 @@ import {
   Space, message, Spin, Descriptions, Empty, Divider, List,
 } from 'antd'
 import {
-  RobotOutlined, SearchOutlined, UploadOutlined, ExperimentOutlined,
-  ThunderboltOutlined, FileTextOutlined, StarOutlined,
+  RobotOutlined, UploadOutlined, ExperimentOutlined,
+  ThunderboltOutlined, FileTextOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import { aiAPI } from '../../api'
 
 const ALGORITHMS = [
-  { value: 'recommendation', label: '推荐算法', color: '#00bebd', desc: '基于协同过滤，为你推荐最匹配的岗位' },
+  { value: 'recommendation', label: '推荐岗位', color: '#00bebd', desc: '基于协同过滤，为你推荐最匹配的岗位' },
   { value: 'prediction', label: '趋势预测', color: '#1890ff', desc: '预测岗位未来需求与薪资趋势' },
   { value: 'classification', label: '职位分类', color: '#722ed1', desc: '按行业对相关岗位进行智能分类' },
   { value: 'clustering', label: '聚类分析', color: '#52c41a', desc: '将岗位按特征聚类为不同群组' },
-  { value: 'sentiment', label: '情感分析', color: '#fa8c16', desc: '分析岗位描述的正面/负面情感倾向' },
   { value: 'nlp', label: '自然语言处理', color: '#eb2f96', desc: '从岗位要求中提取关键技能词汇' },
 ]
 
 export default function AIAnalysis() {
   const [algorithm, setAlgorithm] = useState('recommendation')
-  const [keyword, setKeyword] = useState('')
   const [resumeText, setResumeText] = useState('')
   const [fileList, setFileList] = useState([])
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [activeTab, setActiveTab] = useState('search')
   const [tasks, setTasks] = useState([])
 
   useEffect(() => { loadTasks() }, [])
@@ -36,30 +33,6 @@ export default function AIAnalysis() {
       const { data } = await aiAPI.tasks.list()
       setTasks((data.results || data || []).slice(0, 10))
     } catch {}
-  }
-
-  // ====== 职位搜索分析 ======
-  const handleSearchAnalysis = async () => {
-    if (!keyword.trim()) return message.warning('请输入职位关键词')
-    setLoading(true)
-    setResult(null)
-    try {
-      const { data } = await aiAPI.tasks.create({
-        title: `${keyword} - ${ALGORITHMS.find(a => a.value === algorithm)?.label}`,
-        algorithm_type: algorithm,
-        input_data: { keyword: keyword.trim() },
-        parameters: { source: 'search', keyword: keyword.trim() },
-      })
-      // 执行任务
-      const execRes = await aiAPI.tasks.execute(data.id)
-      setResult(execRes.data.result)
-      message.success('分析完成')
-      loadTasks()
-    } catch (err) {
-      message.error('分析失败：' + (err.response?.data?.message || '请稍后重试'))
-    } finally {
-      setLoading(false)
-    }
   }
 
   // ====== 简历分析 ======
@@ -198,38 +171,6 @@ export default function AIAnalysis() {
             </>
           )}
 
-          {/* 情感分析 */}
-          {result.sentiment && (
-            <Row gutter={[16, 16]}>
-              <Col xs={24} md={12}>
-                <ReactECharts style={{ height: 300 }} option={{
-                  title: { text: '情感分布', left: 'center', textStyle: { fontSize: 14 } },
-                  tooltip: { trigger: 'item' },
-                  color: ['#52c41a', '#ff4d4f', '#d9d9d9'],
-                  series: [{
-                    type: 'pie', radius: ['40%', '70%'],
-                    data: [
-                      { name: '正面', value: result.sentiment.positive },
-                      { name: '负面', value: result.sentiment.negative },
-                      { name: '中性', value: result.sentiment.neutral },
-                    ],
-                  }],
-                }} />
-              </Col>
-              {result.word_cloud && result.word_cloud.length > 0 && (
-                <Col xs={24} md={12}>
-                  <ReactECharts style={{ height: 300 }} option={{
-                    title: { text: '高频词汇', left: 'center', textStyle: { fontSize: 14 } },
-                    tooltip: {},
-                    xAxis: { type: 'category', data: result.word_cloud.map(w => w.name), axisLabel: { rotate: 45 } },
-                    yAxis: { type: 'value' },
-                    series: [{ type: 'bar', data: result.word_cloud.map(w => w.value), itemStyle: { color: '#fa8c16', borderRadius: [4, 4, 0, 0] } }],
-                  }} />
-                </Col>
-              )}
-            </Row>
-          )}
-
           {/* NLP技能 */}
           {result.skills && (
             <>
@@ -293,72 +234,45 @@ export default function AIAnalysis() {
         </Row>
       </div>
 
-      {/* 分析方式选择 */}
+      {/* 简历分析区域 */}
       <div className="table-card">
         <div className="category-tabs" style={{ marginBottom: 0 }}>
-          <div className={`category-tab ${activeTab === 'search' ? 'active' : ''}`} onClick={() => setActiveTab('search')}>
-            <SearchOutlined style={{ marginRight: 4 }} />搜索职位分析
-          </div>
-          <div className={`category-tab ${activeTab === 'resume' ? 'active' : ''}`} onClick={() => setActiveTab('resume')}>
+          <div className="category-tab active">
             <FileTextOutlined style={{ marginRight: 4 }} />上传简历分析
           </div>
         </div>
 
         <div style={{ padding: '24px 0' }}>
-          {activeTab === 'search' ? (
-            <Row gutter={[16, 16]} align="middle">
-              <Col xs={24} sm={18}>
-                <Input
-                  size="large"
-                  placeholder="输入职位关键词，如 Python开发、数据分析师、产品经理..."
-                  prefix={<SearchOutlined style={{ color: '#00bebd' }} />}
-                  value={keyword}
-                  onChange={(e) => setKeyword(e.target.value)}
-                  onPressEnter={handleSearchAnalysis}
-                  allowClear
-                />
-              </Col>
-              <Col xs={24} sm={6}>
-                <Button type="primary" size="large" block icon={<ThunderboltOutlined />}
-                  onClick={handleSearchAnalysis} loading={loading}>
-                  开始分析
-                </Button>
-              </Col>
-            </Row>
-          ) : (
-            <div>
-              <Row gutter={[16, 16]}>
-                <Col xs={24} md={16}>
-                  <Input.TextArea
-                    rows={8}
-                    placeholder="粘贴你的简历内容...&#10;&#10;例如：&#10;姓名：张三&#10;技能：Python, Django, React, MySQL, Redis&#10;经验：3年后端开发经验&#10;学历：本科 计算机科学&#10;项目经历：负责过电商系统开发..."
-                    value={resumeText}
-                    onChange={(e) => setResumeText(e.target.value)}
-                  />
-                </Col>
-                <Col xs={24} md={8}>
-                  <div style={{ border: '2px dashed #d9d9d9', borderRadius: 12, padding: 24, textAlign: 'center', minHeight: 200, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-                    <Upload
-                      accept=".txt,.doc,.docx,.pdf"
-                      maxCount={1}
-                      fileList={fileList}
-                      onChange={({ fileList }) => setFileList(fileList)}
-                      beforeUpload={() => false}
-                    >
-                      <Button icon={<UploadOutlined />} size="large">上传简历文件</Button>
-                    </Upload>
-                    <p style={{ color: '#999', fontSize: 12, marginTop: 12 }}>支持 .txt / .doc / .docx / .pdf</p>
-                  </div>
-                </Col>
-              </Row>
-              <div style={{ marginTop: 16, textAlign: 'right' }}>
-                <Button type="primary" size="large" icon={<ThunderboltOutlined />}
-                  onClick={handleResumeAnalysis} loading={loading}>
-                  分析简历匹配岗位
-                </Button>
+          <Row gutter={[16, 16]}>
+            <Col xs={24} md={16}>
+              <Input.TextArea
+                rows={8}
+                placeholder="粘贴你的简历内容...&#10;&#10;例如：&#10;姓名：张三&#10;技能：Python, Django, React, MySQL, Redis&#10;经验：3年后端开发经验&#10;学历：本科 计算机科学&#10;项目经历：负责过电商系统开发..."
+                value={resumeText}
+                onChange={(e) => setResumeText(e.target.value)}
+              />
+            </Col>
+            <Col xs={24} md={8}>
+              <div style={{ border: '2px dashed #d9d9d9', borderRadius: 12, padding: 24, textAlign: 'center', minHeight: 200, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                <Upload
+                  accept=".txt,.doc,.docx,.pdf"
+                  maxCount={1}
+                  fileList={fileList}
+                  onChange={({ fileList }) => setFileList(fileList)}
+                  beforeUpload={() => false}
+                >
+                  <Button icon={<UploadOutlined />} size="large">上传简历文件</Button>
+                </Upload>
+                <p style={{ color: '#999', fontSize: 12, marginTop: 12 }}>支持 .txt / .doc / .docx / .pdf</p>
               </div>
-            </div>
-          )}
+            </Col>
+          </Row>
+          <div style={{ marginTop: 16, textAlign: 'right' }}>
+            <Button type="primary" size="large" icon={<ThunderboltOutlined />}
+              onClick={handleResumeAnalysis} loading={loading}>
+              分析简历匹配岗位
+            </Button>
+          </div>
         </div>
       </div>
 

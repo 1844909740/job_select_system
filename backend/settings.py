@@ -75,7 +75,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': 'django_job_system',      # 数据库名
         'USER': 'root',                    # 用户名
-        'PASSWORD': '20030207fei',              # 密码
+        'PASSWORD': '123456789',              # 密码
         'HOST': '127.0.0.1',
         'PORT': '3306',
         'OPTIONS': {
