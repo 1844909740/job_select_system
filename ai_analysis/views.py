@@ -72,13 +72,12 @@ class AIAnalysisTaskViewSet(viewsets.ModelViewSet):
             'prediction': self._prediction,
             'classification': self._classification,
             'clustering': self._clustering,
-            'sentiment': self._sentiment,
             'nlp': self._nlp,
         }
         fn = dispatch.get(algo_type, self._recommendation)
         return fn(qs, keyword, task)
 
-    # ---------- 推荐算法 ----------
+    # ---------- 推荐岗位 ----------
     def _recommendation(self, qs, keyword, task):
         sample = list(qs.values('id', 'title', 'company', 'salary_range', 'location')[:200])
         random.shuffle(sample)
@@ -92,7 +91,7 @@ class AIAnalysisTaskViewSet(viewsets.ModelViewSet):
             })
         recs.sort(key=lambda x: -x['score'])
         return {
-            'algorithm': '推荐算法',
+            'algorithm': '推荐岗位',
             'description': f'基于协同过滤与内容特征，为「{keyword or task.title}」推荐最匹配的岗位',
             'total_analyzed': qs.count(),
             'recommendations': recs,
@@ -284,8 +283,6 @@ def analyze_resume(request):
     """上传简历文本/文件进行分析，匹配岗位"""
     resume_text = request.data.get('resume_text', '')
     algorithm_type = request.data.get('algorithm_type', 'recommendation')
-    # 新增：支持手动输入技能进行聚类
-    manual_skills = request.data.get('manual_skills', '')
 
     # 如果上传了文件，读取文件内容
     resume_file = request.FILES.get('resume_file')
@@ -295,16 +292,16 @@ def analyze_resume(request):
         except:
             resume_text = '无法读取文件内容'
 
-    if not resume_text.strip() and not manual_skills.strip():
-        return Response({'error': '请提供简历内容或输入技能关键词'}, status=status.HTTP_400_BAD_REQUEST)
+    if not resume_text.strip():
+        return Response({'error': '请提供简历内容'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # 从简历中提取关键词或使用手动输入的技能
-    if manual_skills.strip():
-        # 手动输入的技能，按逗号或空格分割
-        import re
-        keywords = [skill.strip() for skill in re.split(r'[,，\s]+', manual_skills.strip()) if skill.strip()]
+    # 支持前端传入技能关键词（逗号/空格分隔），与简历提取合并用于聚类匹配
+    skills_input = request.data.get('skills', '')
+    if isinstance(skills_input, list):
+        skills_list = [s.strip() for s in skills_input if s and str(s).strip()]
     else:
-        keywords = _extract_resume_keywords(resume_text)
+        skills_list = [s.strip() for s in (skills_input or '').replace('，', ',').split(',') if s.strip()]
+    keywords = list(dict.fromkeys(skills_list + _extract_resume_keywords(resume_text)))[:15]
 
     # 用关键词搜索匹配的岗位
     q = Q()
@@ -324,23 +321,20 @@ def analyze_resume(request):
         result = _resume_nlp(resume_text, keywords)
     elif algorithm_type == 'prediction':
         result = _resume_prediction(matched, keywords)
-    elif algorithm_type == 'sentiment':
-        result = _resume_sentiment(matched, resume_text)
     else:
         result = _resume_recommendation(matched, keywords, resume_text)
 
     result.update({
         'extracted_keywords': keywords,
         'total_matched': total_matched,
-        'resume_length': len(resume_text) if resume_text else 0,
-        'manual_skills': manual_skills.strip() if manual_skills else None,
+        'resume_length': len(resume_text),
     })
 
     # 保存为任务
     task = AIAnalysisTask.objects.create(
         title=f'简历分析 - {algorithm_type}',
         description=f'基于简历内容进行{algorithm_type}分析',
-        input_data={'resume_keywords': keywords, 'algorithm': algorithm_type, 'manual_skills': manual_skills},
+        input_data={'resume_keywords': keywords, 'algorithm': algorithm_type},
         algorithm_type=algorithm_type,
         parameters={'source': 'resume'},
         status='已完成',
@@ -372,13 +366,13 @@ def _extract_resume_keywords(text):
 
 
 def _resume_recommendation(matched, keywords, resume_text):
-    sample = list(matched.values('title', 'company', 'salary_range', 'location', 'experience', 'education')[:200])
+    sample = list(matched.values('id', 'title', 'company', 'salary_range', 'location', 'experience', 'education')[:200])
     random.shuffle(sample)
     recs = []
     for p in sample[:10]:
-        # 计算匹配分数
         score = round(random.uniform(0.72, 0.98), 2)
         recs.append({
+            'id': p['id'],
             'title': p['title'], 'company': p['company'],
             'salary': p['salary_range'], 'location': p['location'],
             'experience': p['experience'], 'education': p['education'],
@@ -387,7 +381,7 @@ def _resume_recommendation(matched, keywords, resume_text):
         })
     recs.sort(key=lambda x: -x['score'])
     return {
-        'algorithm': '推荐算法',
+        'algorithm': '推荐岗位',
         'description': '基于简历技能与岗位要求的协同过滤匹配',
         'recommendations': recs,
     }
@@ -405,53 +399,27 @@ def _resume_classification(matched, keywords):
 
 def _resume_clustering(matched, keywords):
     clusters = [
-        {'name': '高度匹配', 'size': 0, 'avg_salary': 0, 'positions': []},
-        {'name': '较好匹配', 'size': 0, 'avg_salary': 0, 'positions': []},
-        {'name': '一般匹配', 'size': 0, 'avg_salary': 0, 'positions': []},
+        {'name': '高度匹配', 'size': 0, 'avg_salary': 0},
+        {'name': '较好匹配', 'size': 0, 'avg_salary': 0},
+        {'name': '一般匹配', 'size': 0, 'avg_salary': 0},
     ]
-    
-    # 获取岗位详细信息进行聚类
-    for p in matched.values('id', 'title', 'company', 'salary_range', 'location', 'requirements', 'experience', 'education')[:300]:
+    for p in matched.values_list('salary_range', 'requirements')[:300]:
         try:
-            parts = p['salary_range'].replace('K', '').split('-')
+            parts = p[0].replace('K', '').split('-')
             avg = (int(parts[0]) + int(parts[1])) / 2
         except:
             avg = 10
-        
-        # 计算技能匹配度
-        kw_match = sum(1 for k in keywords if k.lower() in (p['requirements'] or '').lower())
-        match_score = round((kw_match / len(keywords)) * 100, 1) if keywords else 0
-        
+        kw_match = sum(1 for k in keywords if k.lower() in (p[1] or '').lower())
         if kw_match >= 3:
             idx = 0
         elif kw_match >= 1:
             idx = 1
         else:
             idx = 2
-        
         clusters[idx]['size'] += 1
         clusters[idx]['avg_salary'] += avg
-        
-        # 添加岗位信息到对应聚类
-        position_info = {
-            'id': p['id'],
-            'title': p['title'],
-            'company': p['company'],
-            'salary': p['salary_range'],
-            'location': p['location'],
-            'experience': p['experience'],
-            'education': p['education'],
-            'match_score': match_score,
-            'matched_skills': [k for k in keywords if k.lower() in (p['requirements'] or '').lower()]
-        }
-        clusters[idx]['positions'].append(position_info)
-    
-    # 计算平均薪资并限制每个聚类显示的岗位数量
     for c in clusters:
         c['avg_salary'] = round(c['avg_salary'] / c['size'], 1) if c['size'] else 0
-        # 按匹配度排序并限制显示数量
-        c['positions'] = sorted(c['positions'], key=lambda x: -x['match_score'])[:20]
-    
     return {
         'algorithm': '聚类分析',
         'description': '将匹配岗位按技能匹配度聚类',
@@ -478,40 +446,3 @@ def _resume_prediction(matched, keywords):
     }
 
 
-def _resume_sentiment(matched, resume_text):
-    pos = random.randint(40, 70)
-    neg = random.randint(5, 20)
-    neu = 100 - pos - neg
-    return {
-        'algorithm': '情感分析',
-        'description': '对匹配岗位描述进行情感倾向分析',
-        'sentiment': {'positive': pos, 'negative': neg, 'neutral': neu},
-        'sentiment_pct': {'positive': pos, 'negative': neg, 'neutral': neu},
-    }
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def get_position_detail(request, position_id):
-    """获取岗位详情"""
-    try:
-        position = Position.objects.get(id=position_id)
-        return Response({
-            'id': position.id,
-            'title': position.title,
-            'company': position.company,
-            'location': position.location,
-            'salary_range': position.salary_range,
-            'position_type': position.position_type,
-            'requirements': position.requirements,
-            'description': position.description,
-            'benefits': position.benefits,
-            'education': position.education,
-            'experience': position.experience,
-            'industry': position.industry,
-            'source_url': position.source_url,
-            'published_date': position.published_date,
-            'created_at': position.created_at,
-        })
-    except Position.DoesNotExist:
-        return Response({'error': '岗位不存在'}, status=status.HTTP_404_NOT_FOUND)

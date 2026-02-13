@@ -165,11 +165,12 @@ export default function Login() {
                 <Form.Item
                   name="phone"
                   rules={[
+                    { required: true, message: '请填写手机号' },
                     { pattern: /^1[3-9]\d{9}$/, message: '请输入有效的11位手机号' },
                   ]}
                   hasFeedback
                 >
-                  <Input prefix={<PhoneOutlined />} placeholder="手机号（选填）" maxLength={11} allowClear />
+                  <Input prefix={<PhoneOutlined />} placeholder="手机号" maxLength={11} allowClear />
                 </Form.Item>
                 <Form.Item
                   name="password"

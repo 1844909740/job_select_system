@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Row, Col, Card, Statistic, Spin, Input, message, Empty } from 'antd'
+import { Row, Col, Card, Statistic, Spin, Input, message, Empty, Modal, List, Tag, Button, Descriptions } from 'antd'
 import {
   BarChartOutlined, TeamOutlined, RiseOutlined, BankOutlined,
-  SearchOutlined, HeartOutlined,
+  SearchOutlined, HeartOutlined, HeartFilled, DeleteOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { statisticsAPI } from '../../api'
+import { statisticsAPI, positionAPI } from '../../api'
 
 function toArray(data) {
   if (!data) return []
@@ -25,6 +25,37 @@ export default function Statistics() {
   const [industry, setIndustry] = useState([])
   const [company, setCompany] = useState([])
   const [loading, setLoading] = useState(true)
+  const [favModalOpen, setFavModalOpen] = useState(false)
+  const [favorites, setFavorites] = useState([])
+  const [favLoading, setFavLoading] = useState(false)
+  const [positionDetail, setPositionDetail] = useState(null)
+
+  const loadFavorites = async () => {
+    setFavLoading(true)
+    try {
+      const { data } = await positionAPI.favorites()
+      setFavorites(data.results || data || [])
+    } catch {
+      message.error('加载收藏岗位失败')
+    } finally {
+      setFavLoading(false)
+    }
+  }
+
+  const handleUnfavorite = async (positionId) => {
+    try {
+      await positionAPI.unfavorite(positionId)
+      message.success('已取消收藏')
+      setFavorites((prev) => prev.filter((f) => (f.position_detail?.id || f.position?.id || f.position) !== positionId))
+    } catch {
+      message.error('取消收藏失败')
+    }
+  }
+
+  const openFavModal = () => {
+    setFavModalOpen(true)
+    loadFavorites()
+  }
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -129,7 +160,10 @@ export default function Statistics() {
         {/* 概览卡片 */}
         <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
           <Col xs={12} md={6}>
-            <Card><Statistic title="职位总数" value={basic?.total_positions || 0} prefix={<BarChartOutlined />} valueStyle={{ color: '#00bebd' }} /></Card>
+            <Card hoverable onClick={openFavModal} style={{ cursor: 'pointer' }}>
+              <Statistic title="职位总数" value={basic?.total_positions || 0} prefix={<BarChartOutlined />} valueStyle={{ color: '#00bebd' }} />
+              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>点击查看收藏岗位</div>
+            </Card>
           </Col>
           <Col xs={12} md={6}>
             <Card><Statistic title="平均薪资" value={basic?.avg_salary || 0} suffix="K" prefix={<RiseOutlined />} valueStyle={{ color: '#fe574a' }} precision={1} /></Card>
@@ -167,6 +201,81 @@ export default function Statistics() {
           </Row>
         )}
       </Spin>
+      {/* 收藏岗位弹窗 */}
+      <Modal
+        title={<><HeartFilled style={{ color: '#ff4d4f', marginRight: 8 }} />我的收藏岗位</>}
+        open={favModalOpen}
+        onCancel={() => setFavModalOpen(false)}
+        footer={null}
+        width={750}
+      >
+        <Spin spinning={favLoading}>
+          {favorites.length === 0 ? (
+            <Empty description="暂无收藏岗位，请先在职位页面收藏岗位" style={{ padding: 40 }} />
+          ) : (
+            <List
+              dataSource={favorites}
+              renderItem={(fav) => {
+                const pos = fav.position_detail || fav.position || {}
+                const posId = pos.id || fav.position
+                return (
+                  <List.Item
+                    actions={[
+                      <Button
+                        key="unfav"
+                        type="link"
+                        danger
+                        icon={<DeleteOutlined />}
+                        onClick={() => handleUnfavorite(posId)}
+                      >
+                        取消收藏
+                      </Button>,
+                    ]}
+                  >
+                    <List.Item.Meta
+                      title={
+                        <a onClick={() => setPositionDetail(pos)} style={{ color: '#333' }}>
+                          {pos.title || '未知岗位'} <Tag color="red">{pos.salary_range}</Tag>
+                        </a>
+                      }
+                      description={
+                        <span>
+                          {pos.company} · {pos.location}
+                          {pos.experience && ` · ${pos.experience}`}
+                          {pos.education && ` · ${pos.education}`}
+                        </span>
+                      }
+                    />
+                  </List.Item>
+                )
+              }}
+            />
+          )}
+        </Spin>
+      </Modal>
+
+      {/* 岗位详情弹窗 */}
+      <Modal
+        open={!!positionDetail}
+        onCancel={() => setPositionDetail(null)}
+        footer={null}
+        width={700}
+        title={positionDetail?.title}
+      >
+        {positionDetail && (
+          <Descriptions column={2} bordered size="small">
+            <Descriptions.Item label="薪资范围"><span style={{ color: '#fe574a', fontWeight: 600 }}>{positionDetail.salary_range}</span></Descriptions.Item>
+            <Descriptions.Item label="工作城市">{positionDetail.location}</Descriptions.Item>
+            <Descriptions.Item label="经验要求">{positionDetail.experience}</Descriptions.Item>
+            <Descriptions.Item label="学历要求">{positionDetail.education}</Descriptions.Item>
+            <Descriptions.Item label="职位类型">{positionDetail.position_type}</Descriptions.Item>
+            <Descriptions.Item label="所属行业">{positionDetail.industry}</Descriptions.Item>
+            <Descriptions.Item label="公司名称" span={2}>{positionDetail.company}</Descriptions.Item>
+            {positionDetail.description && <Descriptions.Item label="职位描述" span={2}>{positionDetail.description}</Descriptions.Item>}
+            {positionDetail.requirements && <Descriptions.Item label="职位要求" span={2}>{positionDetail.requirements}</Descriptions.Item>}
+          </Descriptions>
+        )}
+      </Modal>
     </div>
   )
 }

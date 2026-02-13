@@ -79,9 +79,11 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
                 }
             },
             'phone': {
+                'required': True,
+                'allow_blank': False,
                 'error_messages': {
-                    'required': '请输入手机号',
-                    'blank': '手机号不能为空',
+                    'required': '请填写手机号',
+                    'blank': '请填写手机号',
                 }
             },
         }
@@ -103,9 +105,10 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         return value
 
     def validate_phone(self, value):
-        """校验手机号格式和唯一性"""
-        if not value:
-            raise serializers.ValidationError('手机号不能为空')
+        """校验手机号必填、格式和唯一性"""
+        if not value or not str(value).strip():
+            raise serializers.ValidationError('请填写手机号')
+        value = str(value).strip()
         # 中国大陆手机号格式
         if not re.match(r'^1[3-9]\d{9}$', value):
             raise serializers.ValidationError('手机号格式不正确，请输入11位有效手机号')

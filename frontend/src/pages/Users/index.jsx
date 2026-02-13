@@ -1,47 +1,37 @@
 import { useState, useEffect } from 'react'
 import { Table, Button, Modal, Form, Input, Select, Tag, Space, message, Card, Row, Col, Statistic, Popconfirm, Spin, Tooltip } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, TeamOutlined, SafetyOutlined, ArrowUpOutlined, ArrowDownOutlined, SwapOutlined, CrownOutlined } from '@ant-design/icons'
-import { userAPI, roleAPI, permissionAPI } from '../../api'
+import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, TeamOutlined, ArrowUpOutlined, ArrowDownOutlined, SwapOutlined, CrownOutlined } from '@ant-design/icons'
+import { userAPI, roleAPI } from '../../api'
 import useAuthStore from '../../store/authStore'
 
 export default function Users() {
   const [users, setUsers] = useState([])
   const [roles, setRoles] = useState([])
-  const [permissions, setPermissions] = useState([])
   const [loading, setLoading] = useState(false)
   const [activeTab, setActiveTab] = useState('users')
   const [userModalOpen, setUserModalOpen] = useState(false)
   const [roleModalOpen, setRoleModalOpen] = useState(false)
-  const [permModalOpen, setPermModalOpen] = useState(false)
   const [editingUser, setEditingUser] = useState(null)
   const [editingRole, setEditingRole] = useState(null)
   const [userForm] = Form.useForm()
   const [roleForm] = Form.useForm()
-  const [permForm] = Form.useForm()
 
   const currentUser = useAuthStore((s) => s.user)
   const isSuperUser = currentUser?.is_superuser
 
   useEffect(() => {
     loadData()
-  }, [activeTab])
+  }, [])
 
   const loadData = async () => {
     setLoading(true)
     try {
-      if (activeTab === 'users') {
-        const { data } = await userAPI.list()
-        setUsers(data.results || data || [])
-        // 也加载角色列表，编辑用户时需要
-        const rolesRes = await roleAPI.list()
-        setRoles(rolesRes.data.results || rolesRes.data || [])
-      } else if (activeTab === 'roles') {
-        const { data } = await roleAPI.list()
-        setRoles(data.results || data || [])
-      } else {
-        const { data } = await permissionAPI.list()
-        setPermissions(data.results || data || [])
-      }
+      const { data: userData } = await userAPI.list()
+      const userList = userData.results || userData || []
+      setUsers(userList)
+      const rolesRes = await roleAPI.list()
+      const roleList = rolesRes.data.results || rolesRes.data || []
+      setRoles(roleList)
     } catch {} finally { setLoading(false) }
   }
 
@@ -145,22 +135,6 @@ export default function Users() {
     catch { message.error('删除失败') }
   }
 
-  // === 权限 ===
-  const savePerm = async (values) => {
-    try {
-      await permissionAPI.create(values)
-      message.success('创建成功')
-      setPermModalOpen(false)
-      permForm.resetFields()
-      loadData()
-    } catch { message.error('创建失败') }
-  }
-
-  const deletePerm = async (id) => {
-    try { await permissionAPI.delete(id); message.success('已删除'); loadData() }
-    catch { message.error('删除失败') }
-  }
-
   /**
    * 渲染用户身份标签
    */
@@ -227,10 +201,10 @@ export default function Users() {
       title: '身份', key: 'admin_role', width: 140,
       render: (_, record) => renderUserRole(record),
     },
-    {
-      title: '角色', dataIndex: 'role', key: 'role',
-      render: (r) => r ? <Tag color="cyan">{typeof r === 'object' ? r.name : r}</Tag> : <span style={{ color: '#ccc' }}>未分配</span>,
-    },
+    // {
+    //   title: '角色', dataIndex: 'role', key: 'role',
+    //   render: (r) => r ? <Tag color="cyan">{typeof r === 'object' ? r.name : r}</Tag> : <span style={{ color: '#ccc' }}>未分配</span>,
+    // },
     {
       title: '状态', dataIndex: 'is_active', key: 'is_active', width: 80,
       render: (v) => <Tag color={v ? 'success' : 'default'}>{v ? '启用' : '禁用'}</Tag>,
@@ -242,7 +216,7 @@ export default function Users() {
         <Space wrap>
           <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEditUser(record)}>编辑</Button>
           {renderAdminActions(record)}
-          {record.id !== currentUser?.id && !(record.is_superuser && !isSuperUser) && !(record.is_staff && !isSuperUser) && (
+          {record.id !== currentUser?.id && !(record.is_superuser && !isSuperUser) && (
             <Popconfirm title="确认删除该用户？此操作不可恢复。" onConfirm={() => deleteUser(record.id)}>
               <Button size="small" type="link" danger icon={<DeleteOutlined />}>删除</Button>
             </Popconfirm>
@@ -256,7 +230,7 @@ export default function Users() {
     { title: '角色名称', dataIndex: 'name', key: 'name' },
     { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
     {
-      title: '权限数', dataIndex: 'permissions', key: 'perms',
+      title: '可使用的权限个数', dataIndex: 'permissions', key: 'perms',
       render: (p) => <Tag color="blue">{Array.isArray(p) ? p.length : 0}</Tag>,
     },
     { title: '创建时间', dataIndex: 'created_at', key: 'created_at', render: (t) => t?.slice(0, 10) },
@@ -273,33 +247,16 @@ export default function Users() {
     },
   ]
 
-  const permColumns = [
-    { title: '权限名称', dataIndex: 'name', key: 'name' },
-    { title: '编码', dataIndex: 'code', key: 'code', render: (c) => <code>{c}</code> },
-    { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
-    {
-      title: '操作', key: 'actions', width: 80,
-      render: (_, record) => (
-        <Popconfirm title="确认删除？" onConfirm={() => deletePerm(record.id)}>
-          <Button size="small" type="link" danger icon={<DeleteOutlined />} />
-        </Popconfirm>
-      ),
-    },
-  ]
-
   return (
     <div className="page-container">
       <h2 className="section-title"><TeamOutlined style={{ color: '#00bebd', marginRight: 8 }} />用户管理</h2>
 
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        <Col xs={8}>
+        <Col xs={12}>
           <Card><Statistic title="用户总数" value={users.length} prefix={<UserOutlined />} valueStyle={{ color: '#00bebd' }} /></Card>
         </Col>
-        <Col xs={8}>
-          <Card><Statistic title="角色数" value={roles.length} prefix={<TeamOutlined />} valueStyle={{ color: '#722ed1' }} /></Card>
-        </Col>
-        <Col xs={8}>
-          <Card><Statistic title="权限数" value={permissions.length} prefix={<SafetyOutlined />} valueStyle={{ color: '#1890ff' }} /></Card>
+        <Col xs={12}>
+          <Card><Statistic title="身份数" value={users.length} prefix={<TeamOutlined />} valueStyle={{ color: '#722ed1' }} /></Card>
         </Col>
       </Row>
 
@@ -308,26 +265,13 @@ export default function Users() {
           <div className={`category-tab ${activeTab === 'users' ? 'active' : ''}`} onClick={() => setActiveTab('users')}>
             <UserOutlined style={{ marginRight: 4 }} />用户列表
           </div>
-          <div className={`category-tab ${activeTab === 'roles' ? 'active' : ''}`} onClick={() => setActiveTab('roles')}>
-            <TeamOutlined style={{ marginRight: 4 }} />角色管理
-          </div>
-          <div className={`category-tab ${activeTab === 'perms' ? 'active' : ''}`} onClick={() => setActiveTab('perms')}>
-            <SafetyOutlined style={{ marginRight: 4 }} />权限管理
-          </div>
+          {/*<div className={`category-tab ${activeTab === 'roles' ? 'active' : ''}`} onClick={() => setActiveTab('roles')}>*/}
+          {/*  <TeamOutlined style={{ marginRight: 4 }} />角色管理*/}
+          {/*</div>*/}
           <div style={{ flex: 1 }} />
-          {activeTab === 'users' && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditingUser(null); userForm.resetFields(); setUserModalOpen(true) }}>
-              新建用户
-            </Button>
-          )}
           {activeTab === 'roles' && (
             <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditingRole(null); roleForm.resetFields(); setRoleModalOpen(true) }}>
               新建角色
-            </Button>
-          )}
-          {activeTab === 'perms' && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => { permForm.resetFields(); setPermModalOpen(true) }}>
-              新建权限
             </Button>
           )}
         </div>
@@ -335,7 +279,6 @@ export default function Users() {
         <Spin spinning={loading}>
           {activeTab === 'users' && <Table columns={userColumns} dataSource={users} rowKey="id" pagination={{ pageSize: 10 }} scroll={{ x: 1000 }} />}
           {activeTab === 'roles' && <Table columns={roleColumns} dataSource={roles} rowKey="id" pagination={{ pageSize: 10 }} />}
-          {activeTab === 'perms' && <Table columns={permColumns} dataSource={permissions} rowKey="id" pagination={{ pageSize: 10 }} />}
         </Spin>
       </div>
 
@@ -362,14 +305,6 @@ export default function Users() {
         </Form>
       </Modal>
 
-      {/* 权限弹窗 */}
-      <Modal title="新建权限" open={permModalOpen} onCancel={() => setPermModalOpen(false)} onOk={() => permForm.submit()} okText="创建">
-        <Form form={permForm} onFinish={savePerm} layout="vertical">
-          <Form.Item name="name" label="权限名称" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="code" label="权限编码" rules={[{ required: true }]}><Input placeholder="如：view_position" /></Form.Item>
-          <Form.Item name="description" label="描述"><Input.TextArea rows={2} /></Form.Item>
-        </Form>
-      </Modal>
     </div>
   )
 }
