@@ -275,6 +275,117 @@ def _categorize_skills(skills):
     return result
 
 
+# ============ 简历文件解析 ============
+
+def _parse_resume_file(uploaded_file):
+    """解析上传的简历文件，提取文本内容"""
+    import io
+    name = (uploaded_file.name or '').lower()
+
+    # .txt — 直接解码
+    if name.endswith('.txt'):
+        try:
+            return uploaded_file.read().decode('utf-8', errors='ignore')
+        except:
+            return uploaded_file.read().decode('gbk', errors='ignore')
+
+    # .docx — 用 python-docx 解析
+    if name.endswith('.docx'):
+        try:
+            from docx import Document
+            doc = Document(io.BytesIO(uploaded_file.read()))
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            # 也读表格中的内容
+            tables_text = []
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            tables_text.append(cell.text.strip())
+            return '\n'.join(paragraphs + tables_text)
+        except Exception:
+            return '无法解析 .docx 文件内容，请确认文件未损坏'
+
+    # .pdf — 用 PyMuPDF 解析
+    if name.endswith('.pdf'):
+        try:
+            import fitz
+            doc = fitz.open(stream=uploaded_file.read(), filetype='pdf')
+            pages = []
+            for page in doc:
+                pages.append(page.get_text())
+            doc.close()
+            return '\n'.join(pages)
+        except Exception:
+            return '无法解析 .pdf 文件内容，请确认文件未损坏'
+
+    # 其他格式尝试按文本读取
+    try:
+        return uploaded_file.read().decode('utf-8', errors='ignore')
+    except:
+        return '不支持的文件格式，请上传 .txt / .docx / .pdf 文件'
+
+
+def _calc_skill_match_score(resume_keywords, position_text):
+    """计算简历技能与岗位描述的匹配得分"""
+    if not resume_keywords or not position_text:
+        return 0.0
+    text_lower = position_text.lower()
+    matched = sum(1 for kw in resume_keywords if kw.lower() in text_lower)
+    return matched / len(resume_keywords)
+
+
+def _resume_recommendation(matched, keywords, resume_text):
+    """基于真实技能匹配的推荐算法"""
+    sample = list(matched.values(
+        'id', 'title', 'company', 'salary_range', 'location',
+        'experience', 'education', 'requirements', 'description'
+    )[:200])
+
+    scored = []
+    for p in sample:
+        # 合并 requirements + description 作为匹配文本
+        match_text = ' '.join([p.get('requirements', ''), p.get('description', '')])
+        skill_score = _calc_skill_match_score(keywords, match_text)
+
+        # 标题匹配加分
+        title = p.get('title', '')
+        title_bonus = sum(0.15 for kw in keywords if kw.lower() in title.lower())
+        title_bonus = min(title_bonus, 0.3)
+
+        # 综合得分（技能匹配为主，标题匹配为辅助）
+        score = min(round(skill_score * 0.7 + title_bonus, 2), 1.0)
+
+        if score > 0:
+            # 找出匹配的技能列表用于展示
+            text_lower = match_text.lower()
+            matched_skills = [kw for kw in keywords if kw.lower() in text_lower]
+            match_reason = f"简历技能与岗位要求匹配（{'、'.join(matched_skills[:4])}）" if matched_skills else '岗位方向基本匹配'
+
+            scored.append({
+                'id': p['id'],
+                'title': title,
+                'company': p.get('company', ''),
+                'salary': p.get('salary_range', ''),
+                'location': p.get('location', ''),
+                'experience': p.get('experience', ''),
+                'education': p.get('education', ''),
+                'score': score,
+                'match_reason': match_reason,
+            })
+
+    # 按分数降序排列，取前 20 条
+    scored.sort(key=lambda x: -x['score'])
+    top = scored[:20]
+
+    keywords_str = '、'.join(keywords[:6])
+    return {
+        'algorithm': '推荐岗位',
+        'description': f'基于简历技能「{keywords_str}」与{len(sample)}个岗位进行真实技能匹配计算',
+        'recommendations': top,
+    }
+
+
 # ============ 简历分析 API ============
 
 @api_view(['POST'])
@@ -287,10 +398,7 @@ def analyze_resume(request):
     # 如果上传了文件，读取文件内容
     resume_file = request.FILES.get('resume_file')
     if resume_file:
-        try:
-            resume_text = resume_file.read().decode('utf-8', errors='ignore')
-        except:
-            resume_text = '无法读取文件内容'
+        resume_text = _parse_resume_file(resume_file)
 
     if not resume_text.strip():
         return Response({'error': '请提供简历内容'}, status=status.HTTP_400_BAD_REQUEST)
@@ -306,7 +414,7 @@ def analyze_resume(request):
     # 用关键词搜索匹配的岗位
     q = Q()
     for kw in keywords[:5]:
-        q |= Q(title__icontains=kw) | Q(requirements__icontains=kw)
+        q |= Q(title__icontains=kw) | Q(requirements__icontains=kw) | Q(description__icontains=kw)
     matched = Position.objects.filter(q).distinct()
     total_matched = matched.count()
 
@@ -346,9 +454,9 @@ def analyze_resume(request):
 
 
 def _extract_resume_keywords(text):
-    """从简历文本中提取关键技能词"""
+    """从简历文本中提取关键技能词（带词边界，避免误匹配）"""
     skill_dict = [
-        'Python', 'Java', 'JavaScript', 'TypeScript', 'Go', 'C++', 'Rust', 'PHP',
+        'Python', 'Java', 'JavaScript', 'TypeScript', 'Go', 'Rust', 'PHP', 'C++',
         'React', 'Vue', 'Angular', 'Django', 'Flask', 'Spring Boot', 'Node.js',
         'MySQL', 'Redis', 'MongoDB', 'PostgreSQL', 'Kafka', 'RabbitMQ',
         'Docker', 'Kubernetes', 'Linux', 'Git', 'AWS', '阿里云', 'Nginx',
@@ -358,33 +466,16 @@ def _extract_resume_keywords(text):
         '产品经理', '项目管理', '运营', '测试', '运维', 'DevOps',
         '前端', '后端', '全栈', '架构', '微服务',
     ]
+    # 短词（<=3 纯字母）用 ASCII 词边界避免误匹配，如 "Go" 误配 "Django"
     found = []
     for skill in skill_dict:
-        if re.search(re.escape(skill), text, re.IGNORECASE):
+        if len(skill) <= 3 and skill.isalpha():
+            pattern = r'(?<![a-zA-Z])' + re.escape(skill) + r'(?![a-zA-Z])'
+        else:
+            pattern = re.escape(skill)
+        if re.search(pattern, text, re.IGNORECASE):
             found.append(skill)
     return found if found else ['开发', '工程师']
-
-
-def _resume_recommendation(matched, keywords, resume_text):
-    sample = list(matched.values('id', 'title', 'company', 'salary_range', 'location', 'experience', 'education')[:200])
-    random.shuffle(sample)
-    recs = []
-    for p in sample[:10]:
-        score = round(random.uniform(0.72, 0.98), 2)
-        recs.append({
-            'id': p['id'],
-            'title': p['title'], 'company': p['company'],
-            'salary': p['salary_range'], 'location': p['location'],
-            'experience': p['experience'], 'education': p['education'],
-            'score': score,
-            'match_reason': f"简历技能「{'、'.join(keywords[:3])}」与岗位要求高度匹配",
-        })
-    recs.sort(key=lambda x: -x['score'])
-    return {
-        'algorithm': '推荐岗位',
-        'description': '基于简历技能与岗位要求的协同过滤匹配',
-        'recommendations': recs,
-    }
 
 
 def _resume_classification(matched, keywords):

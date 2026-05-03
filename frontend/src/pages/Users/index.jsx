@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Table, Button, Modal, Form, Input, Select, Tag, Space, message, Card, Row, Col, Statistic, Popconfirm, Spin, Tooltip } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, TeamOutlined, ArrowUpOutlined, ArrowDownOutlined, SwapOutlined, CrownOutlined } from '@ant-design/icons'
-import { userAPI, roleAPI } from '../../api'
+import { PlusOutlined, EditOutlined, DeleteOutlined, UserOutlined, TeamOutlined, ArrowUpOutlined, ArrowDownOutlined, SwapOutlined, CrownOutlined, ThunderboltOutlined, DatabaseOutlined } from '@ant-design/icons'
+import { userAPI, roleAPI, dataAPI } from '../../api'
 import useAuthStore from '../../store/authStore'
 
 export default function Users() {
@@ -33,6 +33,25 @@ export default function Users() {
       const roleList = rolesRes.data.results || rolesRes.data || []
       setRoles(roleList)
     } catch {} finally { setLoading(false) }
+  }
+
+  const handleOneClickCollection = async () => {
+    setLoading(true)
+    const hide = message.loading('正在采集数据，大约需要 1-3 分钟，请耐心等待...', 0)
+    try {
+      const { data } = await dataAPI.oneClickCollection()
+      hide()
+      if (data?.success) {
+        message.success(`采集完成！共采集 ${data.total_collected} 条，新增 ${data.total_imported} 条（耗时 ${data.elapsed_seconds}s）`)
+      } else {
+        message.warning(data?.message || '采集结果未知')
+      }
+    } catch (err) {
+      hide()
+      message.error(err.response?.data?.error || '一键采集失败，请稍后重试')
+    } finally {
+      setLoading(false)
+    }
   }
 
   // === 用户 ===
@@ -265,6 +284,9 @@ export default function Users() {
           <div className={`category-tab ${activeTab === 'users' ? 'active' : ''}`} onClick={() => setActiveTab('users')}>
             <UserOutlined style={{ marginRight: 4 }} />用户列表
           </div>
+          <div className={`category-tab ${activeTab === 'data' ? 'active' : ''}`} onClick={() => setActiveTab('data')}>
+            <DatabaseOutlined style={{ marginRight: 4 }} />数据采集
+          </div>
           {/*<div className={`category-tab ${activeTab === 'roles' ? 'active' : ''}`} onClick={() => setActiveTab('roles')}>*/}
           {/*  <TeamOutlined style={{ marginRight: 4 }} />角色管理*/}
           {/*</div>*/}
@@ -279,6 +301,25 @@ export default function Users() {
         <Spin spinning={loading}>
           {activeTab === 'users' && <Table columns={userColumns} dataSource={users} rowKey="id" pagination={{ pageSize: 10 }} scroll={{ x: 1000 }} />}
           {activeTab === 'roles' && <Table columns={roleColumns} dataSource={roles} rowKey="id" pagination={{ pageSize: 10 }} />}
+          {activeTab === 'data' && (
+            <Card style={{ maxWidth: 480, margin: '40px auto', textAlign: 'center' }}>
+              <p style={{ color: '#666', marginBottom: 24 }}>
+                从智联招聘(zhaopin.com)自动采集最新岗位数据，
+                覆盖互联网/IT、人工智能、金融、教育培训等多个行业。
+                仅管理员可用。
+              </p>
+              <Button
+                type="primary"
+                size="large"
+                icon={<ThunderboltOutlined />}
+                loading={loading}
+                onClick={handleOneClickCollection}
+                style={{ minWidth: 160 }}
+              >
+                一键采集
+              </Button>
+            </Card>
+          )}
         </Spin>
       </div>
 

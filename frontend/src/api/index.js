@@ -2,7 +2,7 @@ import axios from 'axios'
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000,
+  timeout: 300000,  // 5 分钟（爬虫采集可能耗时较长）
   headers: { 'Content-Type': 'application/json' },
 })
 

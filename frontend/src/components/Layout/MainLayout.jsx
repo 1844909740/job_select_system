@@ -39,7 +39,6 @@ export default function MainLayout() {
           <nav className="header-nav">
             <NavLink to="/" end>首页</NavLink>
             <NavLink to="/position">职位</NavLink>
-            {isAdmin && <NavLink to="/data">数据采集</NavLink>}
             <NavLink to="/statistics">统计分析</NavLink>
             <NavLink to="/ai">AI分析</NavLink>
             {isAdmin && <NavLink to="/logs">操作日志</NavLink>}

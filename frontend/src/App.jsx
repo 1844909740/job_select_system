@@ -4,7 +4,6 @@ import MainLayout from './components/Layout/MainLayout'
 import Home from './pages/Home'
 import Login from './pages/Login'
 import Position from './pages/Position'
-import DataManagement from './pages/DataManagement'
 import Statistics from './pages/Statistics'
 import AIAnalysis from './pages/AIAnalysis'
 import Logs from './pages/Logs'
@@ -42,7 +41,6 @@ export default function App() {
       <Route path="/" element={<MainLayout />}>
         <Route index element={<Home />} />
         <Route path="position" element={<PrivateRoute><Position /></PrivateRoute>} />
-        <Route path="data" element={<AdminRoute><DataManagement /></AdminRoute>} />
         <Route path="statistics" element={<PrivateRoute><Statistics /></PrivateRoute>} />
         <Route path="ai" element={<PrivateRoute><AIAnalysis /></PrivateRoute>} />
         <Route path="logs" element={<AdminRoute><Logs /></AdminRoute>} />
