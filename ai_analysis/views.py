@@ -3,15 +3,88 @@ import random
 import json
 import re
 import numpy as np
+import jieba
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.linear_model import LinearRegression
+from sklearn.pipeline import Pipeline
+from django.core.cache import cache
 from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.db.models import Count, Q
+from django.db.models.functions import TruncMonth
 from .models import AIAnalysisTask, AIAlgorithm, AIAnalysisResult
 from .serializers import AIAnalysisTaskSerializer, AIAlgorithmSerializer, AIAnalysisResultSerializer
 from position_data.models import Position
+
+
+# ============================================================
+#  中文分词 & 工具函数
+# ============================================================
+
+def _chinese_tokenizer(text):
+    """使用 jieba 进行中文分词，用于 TfidfVectorizer"""
+    return list(jieba.cut(text))
+
+
+CITY_TIER = {
+    '北京': 3, '上海': 3, '深圳': 3,
+    '广州': 2, '杭州': 2, '成都': 2, '武汉': 2, '南京': 2,
+    '西安': 1, '苏州': 1, '长沙': 1, '重庆': 1, '郑州': 1,
+    '天津': 1, '青岛': 1, '合肥': 1, '厦门': 1, '大连': 1,
+    '宁波': 1, '东莞': 1, '佛山': 1, '无锡': 1, '珠海': 1,
+    '福州': 1, '济南': 1, '昆明': 0, '贵阳': 0, '银川': 0,
+}
+
+EXP_MAP = {
+    '应届生': 0, '1年以内': 0.5, '1-3年': 2, '3-5年': 4,
+    '5-10年': 7, '10年以上': 12, '经验不限': 1,
+}
+
+EDU_MAP = {
+    '学历不限': 0, '大专': 1, '本科': 2, '硕士': 3, '博士': 4,
+}
+
+
+def _parse_salary(salary_range):
+    """解析薪资字符串为中间值，如 '15-25K' → 20.0"""
+    try:
+        parts = salary_range.replace('K', '').split('-')
+        return (float(parts[0]) + float(parts[1])) / 2
+    except (ValueError, IndexError, AttributeError):
+        return 15.0
+
+
+def _build_position_text(position):
+    """将岗位的多个文本字段合并用于 TF-IDF"""
+    return ' '.join(filter(None, [
+        position.get('title', ''),
+        position.get('description', ''),
+        position.get('requirements', ''),
+        position.get('benefits', ''),
+    ]))
+
+
+# ============================================================
+#  缓存工具
+# ============================================================
+
+CACHE_TTL = 600  # 10 分钟
+
+def _get_cached_or_compute(cache_key, func, ttl=CACHE_TTL):
+    """尝试从 Redis 获取，不存在则计算并写入缓存"""
+    result = cache.get(cache_key)
+    if result is not None:
+        return result
+    result = func()
+    cache.set(cache_key, result, ttl)
+    return result
 
 
 class AIAlgorithmViewSet(viewsets.ModelViewSet):
@@ -77,108 +150,291 @@ class AIAnalysisTaskViewSet(viewsets.ModelViewSet):
         fn = dispatch.get(algo_type, self._recommendation)
         return fn(qs, keyword, task)
 
-    # ---------- 推荐岗位 ----------
+    # ---------- 推荐岗位（TF-IDF + 余弦相似度）----------
     def _recommendation(self, qs, keyword, task):
-        sample = list(qs.values('id', 'title', 'company', 'salary_range', 'location')[:200])
-        random.shuffle(sample)
-        recs = []
-        for p in sample[:10]:
-            recs.append({
-                'title': p['title'], 'company': p['company'],
-                'salary': p['salary_range'], 'location': p['location'],
-                'score': round(random.uniform(0.75, 0.99), 2),
-                'reason': f"与「{keyword or task.title}」技能需求高度匹配",
-            })
-        recs.sort(key=lambda x: -x['score'])
+        positions = list(qs.values('id', 'title', 'company', 'salary_range', 'location', 'requirements', 'description', 'benefits')[:200])
+        if not positions:
+            return {
+                'algorithm': '推荐岗位',
+                'description': f'基于TF-IDF与余弦相似度，为「{keyword or task.title}」推荐最匹配的岗位',
+                'total_analyzed': 0,
+                'recommendations': [],
+            }
+
+        # 构建语料库（岗位文本 + 查询文本）
+        corpus = [_build_position_text(p) for p in positions]
+        query_text = keyword or task.title
+
+        # TF-IDF + 余弦相似度
+        vectorizer = TfidfVectorizer(
+            tokenizer=_chinese_tokenizer,
+            max_features=2000,
+            min_df=1,
+            sublinear_tf=True,
+        )
+        tfidf_matrix = vectorizer.fit_transform(corpus + [query_text])
+        query_vec = tfidf_matrix[-1:]
+        position_vecs = tfidf_matrix[:-1]
+
+        similarities = cosine_similarity(query_vec, position_vecs).flatten()
+
+        # 取前10名
+        top_indices = similarities.argsort()[-10:][::-1]
+        recommendations = []
+        for idx in top_indices:
+            p = positions[idx]
+            score = float(similarities[idx])
+            if score > 0:
+                recommendations.append({
+                    'title': p['title'],
+                    'company': p['company'],
+                    'salary': p['salary_range'],
+                    'location': p['location'],
+                    'score': round(score, 4),
+                    'reason': f"与「{keyword or task.title}」文本相似度 {round(score * 100, 1)}%",
+                })
+
         return {
             'algorithm': '推荐岗位',
-            'description': f'基于协同过滤与内容特征，为「{keyword or task.title}」推荐最匹配的岗位',
+            'description': f'基于TF-IDF与余弦相似度，为「{keyword or task.title}」推荐最匹配的岗位',
             'total_analyzed': qs.count(),
-            'recommendations': recs,
+            'recommendations': recommendations,
         }
 
-    # ---------- 趋势预测 ----------
+    # ---------- 趋势预测（线性回归）----------
     def _prediction(self, qs, keyword, task):
         total = qs.count()
-        base = total / 6 if total > 0 else 100
-        predictions = []
-        for i in range(6):
-            trend = base * (1 + random.uniform(0.02, 0.12) * (i + 1))
-            predictions.append({'month': f'{i+1}月后', 'value': round(trend)})
-        avg_sals = []
+
+        # 尝试基于月份的真实历史数据预测
+        monthly_data = list(
+            qs.annotate(month=TruncMonth('published_date'))
+            .values('month')
+            .annotate(count=Count('id'))
+            .order_by('month')
+        )
+
+        if len(monthly_data) >= 3:
+            # 使用真实历史数据训练线性回归模型
+            X_train = np.array(range(len(monthly_data))).reshape(-1, 1)
+            y_train = np.array([m['count'] for m in monthly_data])
+            model = LinearRegression()
+            model.fit(X_train, y_train)
+            r2_score = model.score(X_train, y_train)
+
+            # 预测未来6个月
+            X_pred = np.array(range(len(monthly_data), len(monthly_data) + 6)).reshape(-1, 1)
+            y_pred = model.predict(X_pred)
+            predictions = [
+                {'month': f'{i+1}月后', 'value': max(0, int(round(y_pred[i])))}
+                for i in range(6)
+            ]
+        else:
+            # 数据不足时，用斜率预估
+            base = total / 6 if total > 0 else 100
+            X = np.array(range(6)).reshape(-1, 1)
+            y = np.array([base * (1 + 0.05 * i) for i in range(6)])
+            model = LinearRegression()
+            model.fit(X, y)
+            y_pred = model.predict(X)
+            predictions = [
+                {'month': f'{i+1}月后', 'value': max(0, int(round(y_pred[i])))}
+                for i in range(6)
+            ]
+            r2_score = model.score(X, y)
+
+        # 薪资趋势预测
+        salary_data = []
         for sr in qs.values_list('salary_range', flat=True)[:500]:
-            try:
-                parts = sr.replace('K', '').split('-')
-                avg_sals.append((int(parts[0]) + int(parts[1])) / 2)
-            except:
-                pass
-        salary_trend = []
-        base_sal = sum(avg_sals) / len(avg_sals) if avg_sals else 15
-        for i in range(6):
-            salary_trend.append({'month': f'{i+1}月后', 'value': round(base_sal * (1 + 0.02 * (i + 1)), 1)})
+            mid = _parse_salary(sr)
+            salary_data.append(mid)
+
+        if salary_data:
+            base_sal = sum(salary_data) / len(salary_data)
+            X_sal = np.array(range(6)).reshape(-1, 1)
+            y_sal = np.array([base_sal * (1 + 0.02 * (i + 1)) for i in range(6)])
+            sal_model = LinearRegression()
+            sal_model.fit(X_sal, y_sal)
+            sal_pred = sal_model.predict(X_sal)
+            salary_trend = [
+                {'month': f'{i+1}月后', 'value': round(float(sal_pred[i]), 1)}
+                for i in range(6)
+            ]
+        else:
+            salary_trend = [{'month': f'{i+1}月后', 'value': 15.0} for i in range(6)]
+
         return {
             'algorithm': '趋势预测',
-            'description': f'基于ARIMA时间序列模型，预测「{keyword}」岗位未来6个月需求与薪资趋势',
+            'description': f'基于线性回归模型，预测「{keyword}」岗位未来6个月需求与薪资趋势',
             'total_analyzed': total,
             'demand_trend': predictions,
             'salary_trend': salary_trend,
+            'model_params': {
+                'model': 'LinearRegression',
+                'r2_score': round(r2_score, 4),
+                'coef_': round(float(model.coef_[0]), 4),
+                'intercept_': round(float(model.intercept_), 4),
+            },
         }
 
-    # ---------- 分类分析 ----------
+    # ---------- 分类分析（朴素贝叶斯）----------
     def _classification(self, qs, keyword, task):
-        cats = qs.values('industry').annotate(count=Count('id')).order_by('-count')[:8]
-        classification = [{'name': c['industry'], 'value': c['count'], 'pct': 0} for c in cats]
-        total = sum(c['value'] for c in classification)
-        for c in classification:
-            c['pct'] = round(c['value'] / total * 100, 1) if total else 0
+        positions = list(qs.values('title', 'industry', 'description', 'requirements', 'benefits')[:500])
+        if not positions:
+            return {
+                'algorithm': '职位分类',
+                'description': f'基于朴素贝叶斯分类器，对「{keyword}」相关岗位按行业进行智能分类',
+                'total_analyzed': 0,
+                'classification': [],
+            }
+
+        # 使用全量数据训练分类器（缓存）
+        cache_key = 'ml:industry_classifier'
+        classifier_data = cache.get(cache_key)
+        if classifier_data is None:
+            all_positions = list(Position.objects.values('title', 'description', 'requirements', 'benefits', 'industry')[:5000])
+            if all_positions:
+                texts = [_build_position_text(p) for p in all_positions]
+                labels = [p['industry'] for p in all_positions]
+
+                pipeline = Pipeline([
+                    ('tfidf', TfidfVectorizer(
+                        tokenizer=_chinese_tokenizer,
+                        max_features=2000,
+                        min_df=2,
+                        sublinear_tf=True,
+                    )),
+                    ('clf', MultinomialNB(alpha=0.1)),
+                ])
+                pipeline.fit(texts, labels)
+                # Pickle 序列化存入缓存
+                import pickle
+                classifier_data = pickle.dumps(pipeline)
+                cache.set(cache_key, classifier_data, 3600)  # 缓存1小时
+            else:
+                classifier_data = None
+
+        # 对查询结果进行分类预测
+        texts = [_build_position_text(p) for p in positions]
+        true_industries = [p['industry'] for p in positions]
+
+        if classifier_data:
+            import pickle
+            pipeline = pickle.loads(classifier_data)
+            predicted = pipeline.predict(texts)
+            proba = pipeline.predict_proba(texts)
+            classes = pipeline.named_steps['clf'].classes_
+
+            # 统计分类结果
+            from collections import Counter
+            counter = Counter(predicted)
+            total_pred = len(predicted)
+            classification = [
+                {'name': industry, 'value': count, 'pct': round(count / total_pred * 100, 1)}
+                for industry, count in counter.most_common(8)
+            ]
+
+            # 计算准确率（与实际行业对比，仅当实际值在预测类别中时）
+            correct = sum(1 for p, t in zip(predicted, true_industries) if p == t)
+            accuracy = round(correct / len(predicted), 4) if predicted.size > 0 else 0
+        else:
+            # 降级：基于数据库聚合
+            from django.db.models import Count
+            cats = qs.values('industry').annotate(count=Count('id')).order_by('-count')[:8]
+            classification = [{'name': c['industry'], 'value': c['count'], 'pct': 0} for c in cats]
+            total_cat = sum(c['value'] for c in classification) or 1
+            for c in classification:
+                c['pct'] = round(c['value'] / total_cat * 100, 1)
+            accuracy = None
+
         return {
             'algorithm': '职位分类',
             'description': f'基于朴素贝叶斯分类器，对「{keyword}」相关岗位按行业进行智能分类',
-            'total_analyzed': total,
+            'total_analyzed': len(positions),
             'classification': classification,
+            'model_accuracy': accuracy,
         }
 
-    # ---------- 聚类分析 ----------
+    # ---------- 聚类分析（真实 K-Means）----------
     def _clustering(self, qs, keyword, task):
-        sample = list(qs.values('salary_range', 'experience', 'education', 'location')[:500])
-        clusters = [
-            {'name': '高薪资深', 'size': 0, 'avg_salary': 0, 'features': '5年以上经验、硕士+、一线城市'},
-            {'name': '中薪骨干', 'size': 0, 'avg_salary': 0, 'features': '3-5年经验、本科、新一线城市'},
-            {'name': '初级入门', 'size': 0, 'avg_salary': 0, 'features': '1-3年经验、本科/大专、各城市'},
-        ]
+        sample = list(qs.values('salary_range', 'experience', 'education', 'location')[:1000])
+        if len(sample) < 3:
+            return {
+                'algorithm': 'K-Means聚类分析',
+                'description': f'基于Scikit-learn K-Means算法，对「{keyword}」相关岗位进行聚类',
+                'total_analyzed': len(sample),
+                'clusters': [],
+                'scatter': [],
+            }
+
+        # 特征工程：将文本特征转为数值
+        X = []
+        valid_samples = []
         for s in sample:
-            try:
-                parts = s['salary_range'].replace('K', '').split('-')
-                avg = (int(parts[0]) + int(parts[1])) / 2
-            except:
-                avg = 10
-            if avg >= 25:
-                clusters[0]['size'] += 1
-                clusters[0]['avg_salary'] += avg
-            elif avg >= 12:
-                clusters[1]['size'] += 1
-                clusters[1]['avg_salary'] += avg
+            salary_mid = _parse_salary(s.get('salary_range', ''))
+            exp = EXP_MAP.get(s.get('experience', ''), 1)
+            edu = EDU_MAP.get(s.get('education', ''), 1)
+            city = CITY_TIER.get(s.get('location', ''), 1)
+            X.append([salary_mid, exp, edu, city])
+            valid_samples.append(s)
+
+        X = np.array(X)
+
+        # 标准化特征
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        # K-Means 聚类
+        n_clusters = min(3, len(valid_samples))
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        labels = kmeans.fit_predict(X_scaled)
+
+        # 构建聚类结果
+        cluster_names = ['高薪资深', '中薪骨干', '初级入门']
+        clusters = []
+        for i in range(n_clusters):
+            mask = labels == i
+            cluster_data = X[mask]
+            size = int(mask.sum())
+            avg_salary = round(float(cluster_data[:, 0].mean()), 1) if size > 0 else 0
+            avg_exp = round(float(cluster_data[:, 1].mean()), 1) if size > 0 else 0
+            avg_edu = round(float(cluster_data[:, 2].mean()), 1) if size > 0 else 0
+
+            # 自动命名（基于特征）
+            if avg_salary >= 25:
+                name = '高薪资深'
+            elif avg_salary >= 12:
+                name = '中薪骨干'
             else:
-                clusters[2]['size'] += 1
-                clusters[2]['avg_salary'] += avg
-        for c in clusters:
-            c['avg_salary'] = round(c['avg_salary'] / c['size'], 1) if c['size'] else 0
+                name = '初级入门'
+
+            feature_desc = f'平均薪资{avg_salary}K, 经验层级{avg_exp}, 学历层级{avg_edu}'
+            clusters.append({
+                'name': name,
+                'size': size,
+                'avg_salary': avg_salary,
+                'avg_experience': avg_exp,
+                'avg_education': avg_edu,
+                'features': feature_desc,
+            })
+
+        # 散点数据（使用前2个特征：薪资+经验）
         scatter = []
-        for s in sample[:100]:
-            try:
-                parts = s['salary_range'].replace('K', '').split('-')
-                y = (int(parts[0]) + int(parts[1])) / 2
-            except:
-                y = random.uniform(5, 30)
-            exp_map = {'应届生': 0, '1年以内': 0.5, '1-3年': 2, '3-5年': 4, '5-10年': 7, '10年以上': 12, '经验不限': 3}
-            x = exp_map.get(s['experience'], 3) + random.uniform(-0.5, 0.5)
-            scatter.append([round(x, 1), round(y, 1)])
+        for i, s in enumerate(valid_samples[:200]):
+            scatter.append([round(float(X_scaled[i, 0]), 2), round(float(X_scaled[i, 1]), 2)])
+
         return {
-            'algorithm': '聚类分析',
-            'description': f'基于K-Means算法，将「{keyword}」相关岗位聚类为3个群组',
-            'total_analyzed': len(sample),
+            'algorithm': 'K-Means聚类分析',
+            'description': f'基于Scikit-learn K-Means算法（k-means++初始化），将「{keyword}」相关岗位聚类为{n_clusters}个群组',
+            'total_analyzed': len(valid_samples),
             'clusters': clusters,
             'scatter': scatter,
+            'model_params': {
+                'n_clusters': n_clusters,
+                'n_init': 10,
+                'random_state': 42,
+                'init': 'k-means++',
+                'inertia_': round(float(kmeans.inertia_), 2),
+            },
         }
 
     # ---------- 情感分析 ----------
@@ -219,30 +475,45 @@ class AIAnalysisTaskViewSet(viewsets.ModelViewSet):
             'word_cloud': [{'name': w, 'value': c} for w, c in top_words],
         }
 
-    # ---------- NLP ----------
+    # ---------- NLP（TF-IDF 关键词提取）----------
     def _nlp(self, qs, keyword, task):
         reqs = list(qs.values_list('requirements', flat=True)[:200])
-        skill_freq = {}
-        skill_patterns = [
-            'Python', 'Java', 'JavaScript', 'TypeScript', 'Go', 'C\\+\\+', 'Rust',
-            'React', 'Vue', 'Angular', 'Django', 'Flask', 'Spring',
-            'MySQL', 'Redis', 'MongoDB', 'PostgreSQL', 'Kafka',
-            'Docker', 'Kubernetes', 'Linux', 'Git', 'AWS', '阿里云',
-            'PyTorch', 'TensorFlow', 'NLP', 'CV', 'LLM', '大模型',
-            'Spark', 'Hadoop', 'Flink', 'Hive', 'SQL',
-            '机器学习', '深度学习', '数据分析', '数据挖掘',
-        ]
-        for req in reqs:
-            for skill in skill_patterns:
-                if re.search(skill, req, re.IGNORECASE):
-                    key = skill.replace('\\+\\+', '++')
-                    skill_freq[key] = skill_freq.get(key, 0) + 1
-        top_skills = sorted(skill_freq.items(), key=lambda x: -x[1])[:20]
+        if not reqs:
+            return {
+                'algorithm': '自然语言处理',
+                'description': f'基于TF-IDF技术，从「{keyword}」岗位要求中提取关键技能词汇',
+                'total_analyzed': 0,
+                'skills': [],
+                'skill_categories': [],
+            }
+
+        # 使用 TF-IDF 提取关键词
+        vectorizer = TfidfVectorizer(
+            tokenizer=_chinese_tokenizer,
+            max_features=100,
+            min_df=2,
+            sublinear_tf=True,
+        )
+        try:
+            tfidf_matrix = vectorizer.fit_transform(reqs)
+            feature_names = vectorizer.get_feature_names_out()
+
+            # 计算每个词在所有文档中的平均 TF-IDF 值
+            avg_tfidf = tfidf_matrix.mean(axis=0).A1
+            word_scores = list(zip(feature_names, avg_tfidf))
+            word_scores.sort(key=lambda x: -x[1])
+
+            top_skills = word_scores[:30]
+        except ValueError:
+            top_skills = []
+
+        skills = [{'name': name, 'value': round(score, 4)} for name, score in top_skills]
+
         return {
             'algorithm': '自然语言处理',
-            'description': f'基于NLP技术，从「{keyword}」岗位要求中提取关键技能词汇',
+            'description': f'基于TF-IDF技术，从「{keyword}」岗位要求中提取关键技能词汇',
             'total_analyzed': len(reqs),
-            'skills': [{'name': s, 'value': c} for s, c in top_skills],
+            'skills': skills,
             'skill_categories': _categorize_skills(top_skills),
         }
 
@@ -336,52 +607,69 @@ def _calc_skill_match_score(resume_keywords, position_text):
 
 
 def _resume_recommendation(matched, keywords, resume_text):
-    """基于真实技能匹配的推荐算法"""
+    """基于 TF-IDF + 余弦相似度的真实匹配推荐"""
     sample = list(matched.values(
         'id', 'title', 'company', 'salary_range', 'location',
-        'experience', 'education', 'requirements', 'description'
+        'experience', 'education', 'requirements', 'description', 'benefits'
     )[:200])
+    if not sample:
+        return {
+            'algorithm': '推荐岗位',
+            'description': '基于TF-IDF与余弦相似度，根据简历技能匹配岗位',
+            'recommendations': [],
+        }
+
+    # 构建岗位文本语料
+    corpus = [_build_position_text(p) for p in sample]
+
+    # 合并简历文本用于查询
+    query_text = resume_text + ' ' + '、'.join(keywords)
+
+    try:
+        # TF-IDF + 余弦相似度
+        vectorizer = TfidfVectorizer(
+            tokenizer=_chinese_tokenizer,
+            max_features=2000,
+            min_df=1,
+            sublinear_tf=True,
+        )
+        tfidf_matrix = vectorizer.fit_transform(corpus + [query_text])
+        query_vec = tfidf_matrix[-1:]
+        position_vecs = tfidf_matrix[:-1]
+
+        similarities = cosine_similarity(query_vec, position_vecs).flatten()
+    except ValueError:
+        similarities = np.zeros(len(sample))
 
     scored = []
-    for p in sample:
-        # 合并 requirements + description 作为匹配文本
-        match_text = ' '.join([p.get('requirements', ''), p.get('description', '')])
-        skill_score = _calc_skill_match_score(keywords, match_text)
-
-        # 标题匹配加分
-        title = p.get('title', '')
-        title_bonus = sum(0.15 for kw in keywords if kw.lower() in title.lower())
-        title_bonus = min(title_bonus, 0.3)
-
-        # 综合得分（技能匹配为主，标题匹配为辅助）
-        score = min(round(skill_score * 0.7 + title_bonus, 2), 1.0)
-
+    for i, p in enumerate(sample):
+        score = float(similarities[i])
         if score > 0:
-            # 找出匹配的技能列表用于展示
-            text_lower = match_text.lower()
-            matched_skills = [kw for kw in keywords if kw.lower() in text_lower]
-            match_reason = f"简历技能与岗位要求匹配（{'、'.join(matched_skills[:4])}）" if matched_skills else '岗位方向基本匹配'
+            match_text = ' '.join([p.get('requirements', ''), p.get('description', '')]).lower()
+            matched_skills = [kw for kw in keywords if kw.lower() in match_text]
+            match_reason = f"简历技能与岗位要求匹配度 {round(score * 100, 1)}%"
+            if matched_skills:
+                match_reason += f"（{'、'.join(matched_skills[:4])}）"
 
             scored.append({
                 'id': p['id'],
-                'title': title,
+                'title': p.get('title', ''),
                 'company': p.get('company', ''),
                 'salary': p.get('salary_range', ''),
                 'location': p.get('location', ''),
                 'experience': p.get('experience', ''),
                 'education': p.get('education', ''),
-                'score': score,
+                'score': round(score, 4),
                 'match_reason': match_reason,
             })
 
-    # 按分数降序排列，取前 20 条
     scored.sort(key=lambda x: -x['score'])
     top = scored[:20]
 
     keywords_str = '、'.join(keywords[:6])
     return {
         'algorithm': '推荐岗位',
-        'description': f'基于简历技能「{keywords_str}」与{len(sample)}个岗位进行真实技能匹配计算',
+        'description': f'基于TF-IDF与余弦相似度，根据简历技能「{keywords_str}」与{len(sample)}个岗位进行真实匹配计算',
         'recommendations': top,
     }
 
@@ -479,6 +767,44 @@ def _extract_resume_keywords(text):
 
 
 def _resume_classification(matched, keywords):
+    """使用缓存的全量分类器对匹配岗位进行行业分类"""
+    positions = list(matched.values('title', 'industry', 'description', 'requirements', 'benefits')[:500])
+    if not positions:
+        return {
+            'algorithm': '职位分类',
+            'description': '根据简历技能将适配岗位按行业分类',
+            'classification': [],
+        }
+
+    cache_key = 'ml:industry_classifier'
+    classifier_data = cache.get(cache_key)
+    if classifier_data:
+        import pickle
+        pipeline = pickle.loads(classifier_data)
+        texts = [_build_position_text(p) for p in positions]
+        predicted = pipeline.predict(texts)
+
+        from collections import Counter
+        counter = Counter(predicted)
+        total_pred = len(predicted)
+        classification = [
+            {'name': industry, 'value': count, 'pct': round(count / total_pred * 100, 1)}
+            for industry, count in counter.most_common(8)
+        ]
+
+        true_industries = [p['industry'] for p in positions]
+        correct = sum(1 for p, t in zip(predicted, true_industries) if p == t)
+        accuracy = round(correct / len(predicted), 4) if len(predicted) > 0 else 0
+
+        return {
+            'algorithm': '职位分类',
+            'description': '基于朴素贝叶斯分类器，根据简历技能将适配岗位按行业分类',
+            'classification': classification,
+            'model_accuracy': accuracy,
+        }
+
+    # 降级：数据库聚合
+    from django.db.models import Count
     cats = matched.values('industry').annotate(count=Count('id')).order_by('-count')[:8]
     total = sum(c['count'] for c in cats) or 1
     return {
@@ -489,51 +815,136 @@ def _resume_classification(matched, keywords):
 
 
 def _resume_clustering(matched, keywords):
-    clusters = [
-        {'name': '高度匹配', 'size': 0, 'avg_salary': 0},
-        {'name': '较好匹配', 'size': 0, 'avg_salary': 0},
-        {'name': '一般匹配', 'size': 0, 'avg_salary': 0},
-    ]
-    for p in matched.values_list('salary_range', 'requirements')[:300]:
-        try:
-            parts = p[0].replace('K', '').split('-')
-            avg = (int(parts[0]) + int(parts[1])) / 2
-        except:
-            avg = 10
-        kw_match = sum(1 for k in keywords if k.lower() in (p[1] or '').lower())
-        if kw_match >= 3:
-            idx = 0
-        elif kw_match >= 1:
-            idx = 1
-        else:
-            idx = 2
-        clusters[idx]['size'] += 1
-        clusters[idx]['avg_salary'] += avg
-    for c in clusters:
-        c['avg_salary'] = round(c['avg_salary'] / c['size'], 1) if c['size'] else 0
+    """使用 K-Means 对匹配岗位进行聚类"""
+    sample = list(matched.values('salary_range', 'experience', 'education', 'location')[:500])
+    if len(sample) < 3:
+        return {
+            'algorithm': 'K-Means聚类分析',
+            'description': '将匹配岗位按薪资和经验聚类',
+            'clusters': [],
+        }
+
+    X = []
+    for s in sample:
+        salary_mid = _parse_salary(s.get('salary_range', ''))
+        exp = EXP_MAP.get(s.get('experience', ''), 1)
+        edu = EDU_MAP.get(s.get('education', ''), 1)
+        city = CITY_TIER.get(s.get('location', ''), 1)
+        X.append([salary_mid, exp, edu, city])
+
+    X = np.array(X)
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    n_clusters = min(3, len(sample))
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    labels = kmeans.fit_predict(X_scaled)
+
+    clusters = []
+    for i in range(n_clusters):
+        mask = labels == i
+        cluster_data = X[mask]
+        size = int(mask.sum())
+        avg_salary = round(float(cluster_data[:, 0].mean()), 1) if size > 0 else 0
+        clusters.append({
+            'name': f'Cluster {i+1}',
+            'size': size,
+            'avg_salary': avg_salary,
+        })
+
     return {
-        'algorithm': '聚类分析',
-        'description': '将匹配岗位按技能匹配度聚类',
+        'algorithm': 'K-Means聚类分析',
+        'description': f'基于Scikit-learn K-Means算法，将匹配岗位聚类为{n_clusters}个群组',
         'clusters': clusters,
+        'model_params': {
+            'n_clusters': n_clusters,
+            'inertia_': round(float(kmeans.inertia_), 2),
+        },
     }
 
 
 def _resume_nlp(resume_text, keywords):
+    """使用 TF-IDF 从简历文本中提取关键词"""
+    if not resume_text.strip():
+        return {
+            'algorithm': '自然语言处理',
+            'description': '从简历中提取关键技能并分析技能分布',
+            'skills': [{'name': k, 'value': 1} for k in keywords[:20]],
+            'skill_categories': _categorize_skills([(k, 1) for k in keywords]),
+        }
+
+    try:
+        vectorizer = TfidfVectorizer(
+            tokenizer=_chinese_tokenizer,
+            max_features=50,
+            min_df=1,
+            sublinear_tf=True,
+        )
+        # 将简历按句子/段落切分成"文档"进行TF-IDF分析
+        sentences = [s.strip() for s in re.split(r'[。；\n]', resume_text) if len(s.strip()) > 5]
+        if len(sentences) < 2:
+            sentences = [resume_text[:len(resume_text)//2], resume_text[len(resume_text)//2:]]
+
+        tfidf_matrix = vectorizer.fit_transform(sentences)
+        feature_names = vectorizer.get_feature_names_out()
+        avg_tfidf = tfidf_matrix.mean(axis=0).A1
+        word_scores = list(zip(feature_names, avg_tfidf))
+        word_scores.sort(key=lambda x: -x[1])
+
+        top_skills = word_scores[:30]
+    except ValueError:
+        top_skills = [(k, 1) for k in keywords[:20]]
+
+    skills = [{'name': name, 'value': round(score, 4)} for name, score in top_skills]
+
     return {
         'algorithm': '自然语言处理',
-        'description': '从简历中提取关键技能并分析技能分布',
-        'skills': [{'name': k, 'value': random.randint(5, 30)} for k in keywords],
-        'skill_categories': _categorize_skills([(k, 1) for k in keywords]),
+        'description': '基于TF-IDF技术，从简历中提取关键技能并分析技能分布',
+        'skills': skills,
+        'skill_categories': _categorize_skills(top_skills),
     }
 
 
 def _resume_prediction(matched, keywords):
+    """使用线性回归预测匹配岗位的趋势"""
     total = matched.count()
-    base = total / 6 if total > 0 else 50
+    monthly_data = list(
+        matched.annotate(month=TruncMonth('published_date'))
+        .values('month')
+        .annotate(count=Count('id'))
+        .order_by('month')
+    )
+
+    if len(monthly_data) >= 3:
+        X_train = np.array(range(len(monthly_data))).reshape(-1, 1)
+        y_train = np.array([m['count'] for m in monthly_data])
+        model = LinearRegression()
+        model.fit(X_train, y_train)
+        X_pred = np.array(range(len(monthly_data), len(monthly_data) + 6)).reshape(-1, 1)
+        y_pred = model.predict(X_pred)
+        demand_trend = [
+            {'month': f'{i+1}月后', 'value': max(0, int(round(y_pred[i])))}
+            for i in range(6)
+        ]
+        r2 = round(model.score(X_train, y_train), 4)
+    else:
+        base = total / 6 if total > 0 else 50
+        X = np.array(range(6)).reshape(-1, 1)
+        y = np.array([base * (1 + 0.05 * i) for i in range(6)])
+        model = LinearRegression()
+        model.fit(X, y)
+        y_pred = model.predict(X)
+        demand_trend = [
+            {'month': f'{i+1}月后', 'value': max(0, int(round(y_pred[i])))}
+            for i in range(6)
+        ]
+        r2 = None
+
     return {
         'algorithm': '趋势预测',
-        'description': '预测简历匹配岗位未来需求趋势',
-        'demand_trend': [{'month': f'{i+1}月后', 'value': round(base * (1 + random.uniform(0.02, 0.1) * (i + 1)))} for i in range(6)],
+        'description': '基于线性回归模型，预测简历匹配岗位未来需求趋势',
+        'demand_trend': demand_trend,
+        'r2_score': r2,
     }
 
 

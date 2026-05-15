@@ -12,3 +12,11 @@ beautifulsoup4==4.14.3
 lxml==6.1.0
 numpy==1.26.4
 django-filter==23.3
+
+# 机器学习
+scikit-learn==1.5.2
+jieba==0.42.1
+
+# 缓存
+redis==5.2.1
+django-redis==5.4.0

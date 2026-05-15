@@ -148,6 +148,26 @@ SIMPLE_JWT = {
 CORS_ALLOW_ALL_ORIGINS = True  # For development only
 CORS_ALLOW_CREDENTIALS = True
 
+# Redis 缓存配置
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': 'redis://127.0.0.1:6379/1',
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            'PARSER_CLASS': 'redis.connection.HiredisParser',
+            'SOCKET_CONNECT_TIMEOUT': 2,
+            'SOCKET_TIMEOUT': 3,
+        },
+        'KEY_PREFIX': 'job_system',
+        'TIMEOUT': 300,  # 默认缓存5分钟
+    }
+}
+
+# Session 使用 Redis 存储
+SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+SESSION_CACHE_ALIAS = 'default'
+
 # Logging 配置 - 开发者友好的日志输出
 LOGGING = {
     'version': 1,
